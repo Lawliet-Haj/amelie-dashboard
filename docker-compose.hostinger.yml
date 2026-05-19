@@ -1,0 +1,7 @@
+services:
+  dashboard:
+    image: ghcr.io/lawliet-haj/amelie-dashboard:latest
+    container_name: amelie-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:80"

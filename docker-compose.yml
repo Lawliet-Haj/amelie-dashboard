@@ -1,0 +1,18 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: amelie-dashboard:latest
+    container_name: amelie-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    # Optional: connect to same Docker network as n8n
+    # networks:
+    #   - n8n_network
+
+# networks:
+#   n8n_network:
+#     external: true
+#     name: n8n_default   # adjust to your actual n8n network name
