@@ -72,12 +72,22 @@ function PhoneLink({ phone }: { phone?: string | number }) {
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
-async function markRappelDone(convId: string, rappele_par: string, remarque: string): Promise<boolean> {
+async function markRappelDone(
+  convId: string,
+  rappele_par: string,
+  remarque: string,
+  phone?: string,
+  motif?: string,
+): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE}/webhook/dashboard-mark-rappel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conv_id: convId, statut: 'DONE', rappele_par, remarque }),
+      body: JSON.stringify({
+        conv_id: convId, statut: 'DONE', rappele_par, remarque,
+        ...(phone ? { phone } : {}),
+        ...(motif ? { motif } : {}),
+      }),
       signal: AbortSignal.timeout(8000),
     });
     return res.ok;
@@ -653,7 +663,7 @@ function AnomalieTraitementModal({
   rappel?: Rappel;
   treatment?: TreatmentRecord;
   onClose: () => void;
-  onTreat: (conv_id: string, remarque: string) => Promise<void>;
+  onTreat: (conv_id: string, remarque: string, phone?: string, motif?: string) => Promise<void>;
   onViewTranscript?: () => void;
 }) {
   const [diagnostic, setDiagnostic] = useState(DIAGNOSTICS[0]);
@@ -677,7 +687,7 @@ function AnomalieTraitementModal({
     const combined = remarqueLibre.trim()
       ? `[${diagnostic}] ${remarqueLibre.trim()}`
       : `[${diagnostic}]`;
-    await onTreat(call.conv_id, combined);
+    await onTreat(call.conv_id, combined, String(call.phone || ''), call.motif_ia);
     setLoading(false);
     onClose();
   };
@@ -2491,7 +2501,9 @@ export default function App() {
     [data?.rappels]
   );
 
-  const onTreat = useCallback(async (conv_id: string, remarque: string) => {
+  const onTreat = useCallback(async (
+    conv_id: string, remarque: string, phone?: string, motif?: string,
+  ) => {
     const nom = user?.nom || user?.username || '';
     const now = new Date().toLocaleString('fr-FR', {
       day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -2500,7 +2512,7 @@ export default function App() {
       ...prev,
       [conv_id]: { statut: 'DONE', diagnostic: '', remarque, par: nom, le: now },
     }));
-    await markRappelDone(conv_id, nom, remarque);
+    await markRappelDone(conv_id, nom, remarque, phone, motif);
   }, [user]);
 
   // Reset local treatments when fresh data arrives
