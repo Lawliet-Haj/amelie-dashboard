@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement,
@@ -8,7 +8,7 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Phone, AlertTriangle, Clock, Bell, RefreshCw,
   BarChart2, PhoneCall, X, MessageSquare, CheckCircle,
-  Circle, Filter, History, Users, LogOut,
+  Circle, Filter, History, Users, LogOut, Search,
 } from 'lucide-react';
 import { useData } from './hooks/useData';
 import { useAuth } from './hooks/useAuth';
@@ -85,6 +85,25 @@ async function markRappelDone(convId: string, rappele_par: string, remarque: str
     return false;
   }
 }
+
+// ─── Anomalie treatment types ─────────────────────────────────────────────────
+
+interface TreatmentRecord {
+  statut: 'DONE';
+  diagnostic: string;
+  remarque: string;
+  par: string;
+  le: string;
+}
+
+const DIAGNOSTICS = [
+  'Patient rappelé — situation résolue',
+  'Faux positif IA — aucune action nécessaire',
+  'Problème technique identifié',
+  'Escalade manager',
+  'Aucune action nécessaire',
+  'Autre',
+];
 
 // ─── Transcript Panel ─────────────────────────────────────────────────────────
 
@@ -544,7 +563,7 @@ function PatientTimelinePanel({
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 
-function KPICard({ value, label, icon: Icon, delay, accentColor, bgColor, sub }: {
+function KPICard({ value, label, icon: Icon, delay, accentColor, bgColor, sub, progress }: {
   value: string | number;
   label: string;
   icon: React.ElementType;
@@ -552,11 +571,25 @@ function KPICard({ value, label, icon: Icon, delay, accentColor, bgColor, sub }:
   accentColor: string;
   bgColor: string;
   sub?: string;
+  progress?: { current: number; total: number };
 }) {
+  // Dynamic accent when a progress bar is present
+  const dynAccent = progress
+    ? progress.total === 0         ? '#94a3b8'
+    : progress.current === 0       ? '#ef4444'
+    : progress.current >= progress.total ? '#22c55e'
+    : progress.current / progress.total >= 0.5 ? '#10b981'
+    : '#f97316'
+    : accentColor;
+
+  const pct = progress && progress.total > 0
+    ? Math.round((progress.current / progress.total) * 100)
+    : 0;
+
   return (
     <div
       className="card animate-fade-up"
-      style={{ padding: '20px 22px', animationDelay: delay, borderTop: `3px solid ${accentColor}` }}
+      style={{ padding: '20px 22px', animationDelay: delay, borderTop: `3px solid ${dynAccent}` }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
         <span style={{
@@ -564,10 +597,12 @@ function KPICard({ value, label, icon: Icon, delay, accentColor, bgColor, sub }:
           letterSpacing: '1.2px', textTransform: 'uppercase', color: 'var(--muted)',
         }}>{label}</span>
         <div style={{
-          width: 34, height: 34, borderRadius: 9, background: bgColor,
+          width: 34, height: 34, borderRadius: 9,
+          background: progress ? `${dynAccent}1a` : bgColor,
           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          transition: 'background 0.5s ease',
         }}>
-          <Icon size={15} style={{ color: accentColor }} />
+          <Icon size={15} style={{ color: dynAccent, transition: 'color 0.5s ease' }} />
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -575,15 +610,246 @@ function KPICard({ value, label, icon: Icon, delay, accentColor, bgColor, sub }:
           fontFamily: 'Lexend,sans-serif', fontSize: 38, fontWeight: 800,
           lineHeight: 1, color: 'var(--text)',
         }}>{value}</span>
-        {sub && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{sub}</span>}
+        {sub && !progress && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{sub}</span>}
       </div>
+      {progress && progress.total > 0 && (
+        <div style={{ marginTop: 14 }}>
+          {/* Label row */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'DM Sans,sans-serif' }}>
+              {progress.current >= progress.total
+                ? '✓ Toutes traitées'
+                : `${progress.current} traitée${progress.current !== 1 ? 's' : ''} / ${progress.total}`}
+            </span>
+            <span style={{
+              fontSize: 11, fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+              color: dynAccent, transition: 'color 0.5s ease',
+            }}>
+              {pct}%
+            </span>
+          </div>
+          {/* Progress bar */}
+          <div style={{ height: 5, background: '#eef4fa', borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%',
+              width: `${pct}%`,
+              background: dynAccent,
+              borderRadius: 10,
+              transition: 'width 0.8s cubic-bezier(.4,0,.2,1), background 0.5s ease',
+            }} />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// ─── Anomalie Treatment Modal ─────────────────────────────────────────────────
+
+function AnomalieTraitementModal({
+  call, rappel, treatment, onClose, onTreat, onViewTranscript,
+}: {
+  call: RecentCall;
+  rappel?: Rappel;
+  treatment?: TreatmentRecord;
+  onClose: () => void;
+  onTreat: (conv_id: string, remarque: string) => Promise<void>;
+  onViewTranscript?: () => void;
+}) {
+  const [diagnostic, setDiagnostic] = useState(DIAGNOSTICS[0]);
+  const [remarqueLibre, setRemarqueLibre] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const isDone = !!treatment || rappel?.statut === 'DONE';
+  const traceData = treatment || (rappel?.statut === 'DONE' ? {
+    par: rappel.rappele_par || '—',
+    le: rappel.rappele_le || '',
+    remarque: rappel.remarque || '',
+  } : null);
+
+  const anomalieReason = rappel
+    ? (CALLBACK_LABELS[rappel.motif] || rappel.motif)
+    : (call.sentiment === 'negatif' ? 'Sentiment négatif' : 'Anomalie détectée');
+
+  const handleSubmit = async () => {
+    if (!call.conv_id || loading) return;
+    setLoading(true);
+    const combined = remarqueLibre.trim()
+      ? `[${diagnostic}] ${remarqueLibre.trim()}`
+      : `[${diagnostic}]`;
+    await onTreat(call.conv_id, combined);
+    setLoading(false);
+    onClose();
+  };
+
+  return (
+    <>
+      <div className="panel-overlay animate-fade-in" onClick={onClose} />
+      <div style={{
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+        width: 520, maxWidth: 'calc(100vw - 32px)', background: 'white',
+        borderRadius: 16, boxShadow: '0 20px 60px rgba(0,0,0,.18)',
+        zIndex: 100, overflow: 'hidden',
+        animation: 'fadeUp 0.2s ease',
+      }}>
+        {/* Header */}
+        <div style={{
+          padding: '18px 24px',
+          background: 'linear-gradient(135deg,#fef2f2 0%,#fff7f0 100%)',
+          borderBottom: '1px solid #fde8e8',
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+        }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <AlertTriangle size={14} style={{ color: '#dc2626' }} />
+              <span style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase',
+                color: '#dc2626', fontFamily: 'Lexend,sans-serif',
+              }}>Traitement anomalie</span>
+            </div>
+            <p style={{ fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 15, color: 'var(--text)', marginBottom: 4 }}>
+              {call.date} à {call.heure}
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                {call.phone || '—'} · {MOTIF_LABELS[call.motif_ia] || call.motif_ia} · {call.duration}s
+              </span>
+              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 5, background: '#fce7e7', color: '#dc2626', fontWeight: 600 }}>
+                ⚠ {anomalieReason}
+              </span>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            padding: 8, border: 'none', background: '#fee2e2',
+            borderRadius: 8, cursor: 'pointer', color: '#dc2626', display: 'flex',
+          }}>
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {isDone ? (
+            <div style={{
+              padding: '14px 16px', background: '#f0fdf4', borderRadius: 10,
+              border: '1px solid #bbf7d0', display: 'flex', flexDirection: 'column', gap: 6,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <CheckCircle size={16} style={{ color: '#16a34a' }} />
+                <span style={{ fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 13, color: '#15803d' }}>
+                  Clôturé{traceData?.le ? ` le ${traceData.le}` : ''}{traceData?.par ? ` par ${traceData.par}` : ''}
+                </span>
+              </div>
+              {traceData?.remarque && (
+                <p style={{
+                  fontSize: 12, color: '#166534', fontStyle: 'italic',
+                  marginLeft: 24, padding: '4px 10px', background: '#dcfce7', borderRadius: 6,
+                }}>
+                  {traceData.remarque}
+                </p>
+              )}
+            </div>
+          ) : !call.conv_id ? (
+            <div style={{ padding: '12px 16px', background: '#f8fafc', borderRadius: 10, border: '1px solid var(--border)', fontSize: 13, color: 'var(--muted)' }}>
+              ⚠ Aucun rappel associé à cet appel.
+            </div>
+          ) : (
+            <>
+              <div>
+                <label style={{
+                  display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: '0.8px',
+                  textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6, fontFamily: 'Lexend,sans-serif',
+                }}>Diagnostic</label>
+                <select
+                  value={diagnostic}
+                  onChange={e => setDiagnostic(e.target.value)}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 9, fontSize: 13,
+                    border: '1.5px solid var(--border)', fontFamily: 'DM Sans,sans-serif',
+                    color: 'var(--text)', background: 'white', outline: 'none', cursor: 'pointer',
+                  }}
+                >
+                  {DIAGNOSTICS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{
+                  display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: '0.8px',
+                  textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 6, fontFamily: 'Lexend,sans-serif',
+                }}>Note (optionnel)</label>
+                <textarea
+                  value={remarqueLibre}
+                  onChange={e => setRemarqueLibre(e.target.value)}
+                  placeholder="Détails supplémentaires…"
+                  rows={3}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 9, fontSize: 13,
+                    border: '1.5px solid var(--border)', fontFamily: 'DM Sans,sans-serif',
+                    color: 'var(--text)', background: 'white', outline: 'none',
+                    resize: 'vertical', boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{
+          padding: '14px 24px', borderTop: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+          background: 'var(--blue-faint)',
+        }}>
+          <div>
+            {onViewTranscript && (
+              <button onClick={onViewTranscript} className="btn btn-ghost btn-sm">
+                <MessageSquare size={13} />
+                Transcript
+              </button>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={onClose} className="btn btn-ghost btn-sm">Fermer</button>
+            {!isDone && call.conv_id && (
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '6px 16px', borderRadius: 8, fontSize: 12, fontWeight: 700,
+                  fontFamily: 'Lexend,sans-serif', cursor: loading ? 'not-allowed' : 'pointer',
+                  border: '1px solid #dc2626', background: '#dc2626', color: 'white',
+                  opacity: loading ? 0.65 : 1,
+                }}
+              >
+                <CheckCircle size={13} />
+                {loading ? 'Clôture…' : 'Clôturer'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
 // ─── Overview ─────────────────────────────────────────────────────────────────
 
-function Overview({ data }: { data: NonNullable<ReturnType<typeof useData>['data']> }) {
+function Overview({
+  data, rappelByConvId, localTreatments,
+}: {
+  data: NonNullable<ReturnType<typeof useData>['data']>;
+  rappelByConvId: Map<string, Rappel>;
+  localTreatments: Record<string, TreatmentRecord>;
+}) {
+  // Week-scoped anomaly treatment stats (consistent with kpis.anomalies_week)
+  const weekStart = get7DaysAgo();
+  const anomalyCallsWeek = data.recent_calls.filter(c =>
+    c.anomalie === 'OUI' && (!c.date_full || c.date_full >= weekStart)
+  );
+  const anomalyTreatedWeek = anomalyCallsWeek.filter(c =>
+    c.conv_id && (localTreatments[c.conv_id] || rappelByConvId.get(c.conv_id)?.statut === 'DONE')
+  ).length;
   const callsData = {
     labels: data.calls_by_day.map(d => d.date),
     datasets: [
@@ -644,7 +910,15 @@ function Overview({ data }: { data: NonNullable<ReturnType<typeof useData>['data
       {/* KPI row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
         <KPICard value={data.kpis.total_week}           label="Appels semaine" icon={Phone}         delay="0s"     accentColor="var(--blue)"   bgColor="var(--blue-light)" sub={`${data.kpis.total_today} auj.`} />
-        <KPICard value={data.kpis.anomalies_week}       label="Anomalies"      icon={AlertTriangle} delay="0.06s"  accentColor="#ef4444"       bgColor="#fef2f2" />
+        <KPICard
+          value={data.kpis.anomalies_week}
+          label="Anomalies"
+          icon={AlertTriangle}
+          delay="0.06s"
+          accentColor="#ef4444"
+          bgColor="#fef2f2"
+          progress={{ current: anomalyTreatedWeek, total: anomalyCallsWeek.length }}
+        />
         <KPICard value={`${data.kpis.avg_duration}s`}  label="Durée moy."     icon={Clock}         delay="0.12s"  accentColor="var(--blue)"   bgColor="var(--blue-light)" />
         <KPICard value={data.kpis.rappels_pending}      label="Rappels att."   icon={Bell}          delay="0.18s"  accentColor="var(--orange)" bgColor="var(--orange-light)" />
       </div>
@@ -710,10 +984,13 @@ type AppelSortCol = 'datetime' | 'duration' | 'anomalie';
 type DatePreset   = 'today' | 'week' | 'all' | 'custom';
 
 function AppelsView({
-  data, onTimeline,
+  data, onTimeline, rappelByConvId, localTreatments, onTreat,
 }: {
   data: NonNullable<ReturnType<typeof useData>['data']>;
   onTimeline: (phone: string) => void;
+  rappelByConvId: Map<string, Rappel>;
+  localTreatments: Record<string, TreatmentRecord>;
+  onTreat: (conv_id: string, remarque: string) => Promise<void>;
 }) {
   const [selected, setSelected] = useState<RecentCall | null>(null);
   const [sortCol, setSortCol]   = useState<AppelSortCol>('datetime');
@@ -721,9 +998,31 @@ function AppelsView({
   const [preset, setPreset]     = useState<DatePreset>('today');
   const [dateFrom, setDateFrom] = useState<string>(todayISO);
   const [dateTo, setDateTo]     = useState<string>(todayISO);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [searchPhone, setSearchPhone]         = useState('');
+  const [motifFilter, setMotifFilter]         = useState('');
+  const [sentimentFilter, setSentimentFilter] = useState('');
+  const [anomalieFilter, setAnomalieFilter]   = useState<'' | 'OUI' | 'NON'>('');
+  const PAGE_SIZE = 100;
+
+  const [selectedAnomalie, setSelectedAnomalie] = useState<RecentCall | null>(null);
+  const motifOptions = Array.from(new Set(data.recent_calls.map(c => c.motif_ia).filter(Boolean))).sort();
+  const normalizePhone = (p: string) => String(p || '').replace(/[\s.\-()+]/g, '');
+  const hasActiveFilter = !!(searchPhone || motifFilter || sentimentFilter || anomalieFilter);
+  const isTraite = (c: RecentCall): boolean => {
+    if (!c.conv_id) return false;
+    if (localTreatments[c.conv_id]) return true;
+    return rappelByConvId.get(c.conv_id)?.statut === 'DONE';
+  };
+
+  const resetExtraFilters = () => {
+    setSearchPhone(''); setMotifFilter(''); setSentimentFilter(''); setAnomalieFilter('');
+    setCurrentPage(1);
+  };
 
   const applyPreset = (p: DatePreset) => {
     setPreset(p);
+    setCurrentPage(1);
     if (p === 'today') { setDateFrom(todayISO);       setDateTo(todayISO); }
     if (p === 'week')  { setDateFrom(get7DaysAgo());  setDateTo(todayISO); }
     if (p === 'all')   { setDateFrom('');              setDateTo('');       }
@@ -749,14 +1048,29 @@ function AppelsView({
     return sortDir === 'asc' ? cmp : -cmp;
   });
 
-  // Date filter (compare ISO strings)
+  // Combined filter: date + phone search + motif + sentiment + anomalie
+  const needle = normalizePhone(searchPhone);
   const filtered = sorted.filter(c => {
-    if (!dateFrom && !dateTo) return true;
-    const d = c.date_full ?? toKey(c).slice(0, 10);
-    if (dateFrom && d < dateFrom) return false;
-    if (dateTo   && d > dateTo)   return false;
+    // Date range
+    if (dateFrom || dateTo) {
+      const d = c.date_full ?? toKey(c).slice(0, 10);
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo   && d > dateTo)   return false;
+    }
+    // Phone search (digits-only contains)
+    if (needle && !normalizePhone(c.phone || '').includes(needle)) return false;
+    // Motif / sentiment / anomalie
+    if (motifFilter     && c.motif_ia  !== motifFilter)     return false;
+    if (sentimentFilter && c.sentiment !== sentimentFilter) return false;
+    if (anomalieFilter  && c.anomalie  !== anomalieFilter)  return false;
     return true;
   });
+
+  // Pagination — clamp current page if filter shrank result set
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage   = Math.min(currentPage, totalPages);
+  if (safePage !== currentPage) setTimeout(() => setCurrentPage(safePage), 0);
+  const paged      = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const SortIcon = ({ col }: { col: AppelSortCol }) => (
     <span style={{ marginLeft: 4, opacity: sortCol === col ? 1 : 0.25, fontSize: 10 }}>
@@ -779,6 +1093,16 @@ function AppelsView({
   return (
     <>
       {selected && <TranscriptPanel call={selected} onClose={() => setSelected(null)} />}
+      {selectedAnomalie && (
+        <AnomalieTraitementModal
+          call={selectedAnomalie}
+          rappel={selectedAnomalie.conv_id ? rappelByConvId.get(selectedAnomalie.conv_id) : undefined}
+          treatment={selectedAnomalie.conv_id ? localTreatments[selectedAnomalie.conv_id] : undefined}
+          onClose={() => setSelectedAnomalie(null)}
+          onTreat={onTreat}
+          onViewTranscript={selectedAnomalie.transcript ? () => { setSelectedAnomalie(null); setSelected(selectedAnomalie); } : undefined}
+        />
+      )}
       <div className="card animate-fade-up" style={{ overflow: 'hidden' }}>
 
         {/* Header */}
@@ -789,8 +1113,13 @@ function AppelsView({
           <h3 style={{ fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 15 }}>Appels récents</h3>
           <span style={{ fontSize: 12, color: 'var(--muted)' }}>
             {filtered.length === data.recent_calls.length
-              ? `${filtered.length} appels`
+              ? `${filtered.length} appel${filtered.length > 1 ? 's' : ''}`
               : `${filtered.length} / ${data.recent_calls.length} appels`}
+            {totalPages > 1 && (
+              <span style={{ marginLeft: 8, color: 'var(--blue-dark)', fontWeight: 600 }}>
+                · page {safePage}/{totalPages}
+              </span>
+            )}
           </span>
         </div>
 
@@ -825,7 +1154,7 @@ function AppelsView({
               value={dateFrom}
               max={dateTo || todayISO}
               style={inputStyle}
-              onChange={e => { setDateFrom(e.target.value); setPreset('custom'); }}
+              onChange={e => { setDateFrom(e.target.value); setPreset('custom'); setCurrentPage(1); }}
             />
             <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
             <input
@@ -834,7 +1163,7 @@ function AppelsView({
               min={dateFrom}
               max={todayISO}
               style={inputStyle}
-              onChange={e => { setDateTo(e.target.value); setPreset('custom'); }}
+              onChange={e => { setDateTo(e.target.value); setPreset('custom'); setCurrentPage(1); }}
             />
           </div>
 
@@ -849,6 +1178,93 @@ function AppelsView({
               }}
             >
               Réinitialiser
+            </button>
+          )}
+        </div>
+
+        {/* Search & filter bar */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          background: 'white',
+        }}>
+          {/* Phone search */}
+          <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 200, maxWidth: 320 }}>
+            <Search size={13} style={{
+              position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+              color: 'var(--muted)', pointerEvents: 'none',
+            }} />
+            <input
+              type="search"
+              value={searchPhone}
+              onChange={e => { setSearchPhone(e.target.value); setCurrentPage(1); }}
+              placeholder="Rechercher un numéro…"
+              style={{
+                ...inputStyle, width: '100%', paddingLeft: 30, paddingRight: 30,
+                cursor: 'text',
+              }}
+            />
+            {searchPhone && (
+              <button
+                onClick={() => { setSearchPhone(''); setCurrentPage(1); }}
+                style={{
+                  position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                  background: 'var(--blue-faint)', border: 'none', borderRadius: 5,
+                  cursor: 'pointer', padding: 3, display: 'flex',
+                }}
+                title="Effacer"
+              >
+                <X size={11} style={{ color: 'var(--muted)' }} />
+              </button>
+            )}
+          </div>
+
+          {/* Motif */}
+          <select
+            value={motifFilter}
+            onChange={e => { setMotifFilter(e.target.value); setCurrentPage(1); }}
+            style={{ ...inputStyle, minWidth: 130 }}
+          >
+            <option value="">Tous motifs</option>
+            {motifOptions.map(m => (
+              <option key={m} value={m}>{MOTIF_LABELS[m] || m}</option>
+            ))}
+          </select>
+
+          {/* Sentiment */}
+          <select
+            value={sentimentFilter}
+            onChange={e => { setSentimentFilter(e.target.value); setCurrentPage(1); }}
+            style={{ ...inputStyle, minWidth: 130 }}
+          >
+            <option value="">Tous sentiments</option>
+            <option value="positif">😊 Positif</option>
+            <option value="neutre">😐 Neutre</option>
+            <option value="negatif">😞 Négatif</option>
+          </select>
+
+          {/* Anomalie */}
+          <select
+            value={anomalieFilter}
+            onChange={e => { setAnomalieFilter(e.target.value as '' | 'OUI' | 'NON'); setCurrentPage(1); }}
+            style={{ ...inputStyle, minWidth: 130 }}
+          >
+            <option value="">Toutes anomalies</option>
+            <option value="OUI">⚠ Anomalie seulement</option>
+            <option value="NON">✓ Sans anomalie</option>
+          </select>
+
+          {/* Reset all */}
+          {hasActiveFilter && (
+            <button
+              onClick={resetExtraFilters}
+              style={{
+                fontSize: 11, color: 'var(--blue)', background: 'none',
+                border: 'none', cursor: 'pointer', padding: '2px 4px',
+                textDecoration: 'underline', fontFamily: 'DM Sans, sans-serif',
+              }}
+            >
+              Effacer les filtres
             </button>
           )}
         </div>
@@ -871,11 +1287,11 @@ function AppelsView({
                 <th onClick={() => handleSort('anomalie')} style={thSort('anomalie')}>
                   Anomalie <SortIcon col="anomalie" />
                 </th>
-                <th>Transcript</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c, i) => (
+              {paged.map((c, i) => (
                 <tr key={i}>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     <span style={{ color: 'var(--muted)', fontSize: 12 }}>{c.date}</span>
@@ -913,16 +1329,40 @@ function AppelsView({
                     </span>
                   </td>
                   <td>
-                    {c.anomalie === 'OUI'
-                      ? <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#fef2f2', color: '#dc2626', fontWeight: 700 }}>⚠ OUI</span>
-                      : <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#f0fdf4', color: '#16a34a', fontWeight: 500 }}>✓ NON</span>
-                    }
+                    {c.anomalie === 'OUI' ? (
+                      isTraite(c)
+                        ? <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#f0fdf4', color: '#16a34a', fontWeight: 700 }}>✅ Traité</span>
+                        : <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#fef2f2', color: '#dc2626', fontWeight: 700 }}>⚠ OUI</span>
+                    ) : (
+                      <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#f0fdf4', color: '#16a34a', fontWeight: 500 }}>✓ NON</span>
+                    )}
                   </td>
                   <td>
-                    <button onClick={() => setSelected(c)} className="btn btn-ghost btn-sm">
-                      <MessageSquare size={13} />
-                      Voir
-                    </button>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {c.anomalie === 'OUI' && (
+                        <button
+                          onClick={() => setSelectedAnomalie(c)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 5,
+                            padding: '4px 10px', borderRadius: 7, fontSize: 12,
+                            fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+                            cursor: 'pointer', border: 'none',
+                            background: isTraite(c) ? '#e2f4ec' : '#dc2626',
+                            color: isTraite(c) ? '#16a34a' : 'white',
+                          }}
+                        >
+                          {isTraite(c)
+                            ? <><CheckCircle size={12} /> Détails</>
+                            : <><AlertTriangle size={12} /> Traiter</>
+                          }
+                        </button>
+                      )}
+                      {c.transcript && (
+                        <button onClick={() => setSelected(c)} className="btn btn-ghost btn-sm">
+                          <MessageSquare size={13} />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -936,6 +1376,87 @@ function AppelsView({
             </tbody>
           </table>
         </div>
+
+        {/* Pagination footer */}
+        {totalPages > 1 && (
+          <div style={{
+            padding: '12px 24px',
+            borderTop: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: 'var(--blue-faint)',
+            flexWrap: 'wrap', gap: 10,
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'DM Sans, sans-serif' }}>
+              Affichage <strong style={{ color: 'var(--text)' }}>
+                {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, filtered.length)}
+              </strong> sur <strong style={{ color: 'var(--text)' }}>{filtered.length}</strong>
+            </span>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setCurrentPage(1)}
+                disabled={safePage === 1}
+                style={{ opacity: safePage === 1 ? 0.35 : 1 }}
+                title="Première page"
+              >
+                «
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={safePage === 1}
+                style={{ opacity: safePage === 1 ? 0.35 : 1 }}
+              >
+                ‹ Précédent
+              </button>
+
+              {/* Page numbers — show up to 5 surrounding pages */}
+              {(() => {
+                const pages: number[] = [];
+                const start = Math.max(1, safePage - 2);
+                const end   = Math.min(totalPages, start + 4);
+                const realStart = Math.max(1, end - 4);
+                for (let p = realStart; p <= end; p++) pages.push(p);
+                return pages.map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setCurrentPage(p)}
+                    style={{
+                      minWidth: 30, height: 28, padding: '0 8px',
+                      borderRadius: 7, fontSize: 12, fontWeight: 600,
+                      fontFamily: 'Lexend, sans-serif',
+                      cursor: 'pointer',
+                      border: p === safePage ? '1px solid var(--blue)' : '1px solid transparent',
+                      background: p === safePage ? 'var(--blue)' : 'transparent',
+                      color: p === safePage ? 'white' : 'var(--text-2)',
+                    }}
+                  >
+                    {p}
+                  </button>
+                ));
+              })()}
+
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={safePage === totalPages}
+                style={{ opacity: safePage === totalPages ? 0.35 : 1 }}
+              >
+                Suivant ›
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={safePage === totalPages}
+                style={{ opacity: safePage === totalPages ? 0.35 : 1 }}
+                title="Dernière page"
+              >
+                »
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
@@ -961,6 +1482,22 @@ function RappelsView({
   // inline confirm form: conv_id being confirmed + current remark text
   const [confirmingId, setConfirmingId]   = useState<string | null>(null);
   const [remarkText, setRemarkText]       = useState('');
+  // search & filter
+  const [searchPhone, setSearchPhone]     = useState('');
+  const [motifFilter, setMotifFilter]     = useState('');
+  const [auteurFilter, setAuteurFilter]   = useState('');
+  const [datePreset, setDatePreset]       = useState<DatePreset>('all');
+  const [dateFrom, setDateFrom]           = useState<string>('');
+  const [dateTo, setDateTo]               = useState<string>('');
+
+  const normalizePhone = (p: string) => String(p || '').replace(/[\s.\-()+]/g, '');
+
+  const applyDatePreset = (p: DatePreset) => {
+    setDatePreset(p);
+    if (p === 'today') { setDateFrom(todayISO);      setDateTo(todayISO); }
+    if (p === 'week')  { setDateFrom(get7DaysAgo()); setDateTo(todayISO); }
+    if (p === 'all')   { setDateFrom('');             setDateTo('');       }
+  };
 
   useEffect(() => {
     setLocalStatus({});
@@ -1002,8 +1539,41 @@ function RappelsView({
       return next;
     });
 
-  // Build groups from all rappels, then filter at group level
-  const allGroups = buildRappelGroups(data.rappels, getStatut);
+  // Build distinct lists for filter dropdowns
+  const motifOptions  = Array.from(new Set(data.rappels.map(r => r.motif).filter(Boolean))).sort();
+  const auteurOptions = Array.from(new Set(
+    data.rappels
+      .map(r => (getTrace(r)?.rappele_par || '').trim())
+      .filter(Boolean)
+  )).sort();
+
+  const hasActiveFilter = !!(searchPhone || motifFilter || auteurFilter || dateFrom || dateTo);
+  const needle = normalizePhone(searchPhone);
+
+  // Pre-filter individual rappels before grouping
+  const preFiltered = data.rappels.filter(r => {
+    if (needle && !normalizePhone(r.phone || '').includes(needle)) return false;
+    if (motifFilter && r.motif !== motifFilter) return false;
+    if (auteurFilter) {
+      const trace = getTrace(r);
+      if (!trace || trace.rappele_par !== auteurFilter) return false;
+    }
+    if (dateFrom || dateTo) {
+      const d = r.date_full || '';
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo   && d > dateTo)   return false;
+    }
+    return true;
+  });
+
+  const resetExtraFilters = () => {
+    setSearchPhone(''); setMotifFilter(''); setAuteurFilter('');
+    setDatePreset('all'); setDateFrom(''); setDateTo('');
+  };
+
+  // Build groups from filtered rappels (for table), and from all rappels (for KPI cards)
+  const allGroups       = buildRappelGroups(preFiltered, getStatut);
+  const allGroupsGlobal = buildRappelGroups(data.rappels, getStatut);
   const groups = allGroups.filter(g => {
     if (filter === 'pending') return g.pendingCount > 0;
     if (filter === 'urgent')  return g.hasUrgent;
@@ -1011,9 +1581,10 @@ function RappelsView({
     return true;
   });
 
-  const pendingCount = allGroups.reduce((n, g) => n + g.pendingCount, 0);
-  const urgentCount  = allGroups.filter(g => g.hasUrgent).reduce((n, g) => n + g.all.filter(r => getStatut(r) !== 'DONE' && r.priorite === 'URGENT').length, 0);
-  const doneGroups   = allGroups.filter(g => g.pendingCount === 0).length;
+  // KPI cards always reflect ALL rappels, regardless of search/filters
+  const pendingCount = allGroupsGlobal.reduce((n, g) => n + g.pendingCount, 0);
+  const urgentCount  = allGroupsGlobal.filter(g => g.hasUrgent).reduce((n, g) => n + g.all.filter(r => getStatut(r) !== 'DONE' && r.priorite === 'URGENT').length, 0);
+  const doneGroups   = allGroupsGlobal.filter(g => g.pendingCount === 0).length;
 
   const rappelAsCall = (r: Rappel): RecentCall => ({
     date: r.date, date_full: r.date_full, heure: r.heure, phone: r.phone,
@@ -1181,6 +1752,157 @@ function RappelsView({
           </div>
         </div>
 
+        {/* Date preset bar */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          background: 'var(--blue-faint)',
+        }}>
+          {([
+            { key: 'all'   as DatePreset, label: 'Tout' },
+            { key: 'today' as DatePreset, label: "Aujourd'hui" },
+            { key: 'week'  as DatePreset, label: '7 jours' },
+          ]).map(({ key, label }) => (
+            <button
+              key={key}
+              className={`filter-tab${datePreset === key ? ' active' : ''}`}
+              onClick={() => applyDatePreset(key)}
+            >
+              {label}
+            </button>
+          ))}
+          <span style={{ width: 1, height: 20, background: 'var(--border)', flexShrink: 0, margin: '0 2px' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="date"
+              value={dateFrom}
+              max={dateTo || todayISO}
+              style={{
+                padding: '4px 10px', borderRadius: 8, fontSize: 12,
+                border: '1px solid var(--border)', fontFamily: 'DM Sans, sans-serif',
+                color: 'var(--text)', background: 'white', outline: 'none', cursor: 'pointer',
+                colorScheme: 'light' as React.CSSProperties['colorScheme'],
+              }}
+              onChange={e => { setDateFrom(e.target.value); setDatePreset('custom'); }}
+            />
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
+            <input
+              type="date"
+              value={dateTo}
+              min={dateFrom}
+              max={todayISO}
+              style={{
+                padding: '4px 10px', borderRadius: 8, fontSize: 12,
+                border: '1px solid var(--border)', fontFamily: 'DM Sans, sans-serif',
+                color: 'var(--text)', background: 'white', outline: 'none', cursor: 'pointer',
+                colorScheme: 'light' as React.CSSProperties['colorScheme'],
+              }}
+              onChange={e => { setDateTo(e.target.value); setDatePreset('custom'); }}
+            />
+          </div>
+          {datePreset === 'custom' && (
+            <button
+              onClick={() => applyDatePreset('all')}
+              style={{
+                fontSize: 11, color: 'var(--blue)', background: 'none',
+                border: 'none', cursor: 'pointer', padding: '2px 4px',
+                textDecoration: 'underline', fontFamily: 'DM Sans, sans-serif',
+              }}
+            >
+              Réinitialiser
+            </button>
+          )}
+        </div>
+
+        {/* Search & filter bar */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          background: 'white',
+        }}>
+          {/* Phone search */}
+          <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 200, maxWidth: 320 }}>
+            <Search size={13} style={{
+              position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)',
+              color: 'var(--muted)', pointerEvents: 'none',
+            }} />
+            <input
+              type="search"
+              value={searchPhone}
+              onChange={e => setSearchPhone(e.target.value)}
+              placeholder="Rechercher un numéro…"
+              style={{
+                width: '100%', paddingLeft: 30, paddingRight: 30,
+                padding: '6px 12px', borderRadius: 8, fontSize: 12,
+                border: '1px solid var(--border)', fontFamily: 'DM Sans, sans-serif',
+                color: 'var(--text)', background: 'white', outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            {searchPhone && (
+              <button
+                onClick={() => setSearchPhone('')}
+                style={{
+                  position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                  background: 'var(--blue-faint)', border: 'none', borderRadius: 5,
+                  cursor: 'pointer', padding: 3, display: 'flex',
+                }}
+                title="Effacer"
+              >
+                <X size={11} style={{ color: 'var(--muted)' }} />
+              </button>
+            )}
+          </div>
+
+          {/* Motif */}
+          <select
+            value={motifFilter}
+            onChange={e => setMotifFilter(e.target.value)}
+            style={{
+              padding: '6px 10px', borderRadius: 8, fontSize: 12, minWidth: 160,
+              border: '1px solid var(--border)', fontFamily: 'DM Sans, sans-serif',
+              color: 'var(--text)', background: 'white', outline: 'none', cursor: 'pointer',
+            }}
+          >
+            <option value="">Tous motifs</option>
+            {motifOptions.map(m => (
+              <option key={m} value={m}>{CALLBACK_LABELS[m] || m}</option>
+            ))}
+          </select>
+
+          {/* Auteur */}
+          {auteurOptions.length > 0 && (
+            <select
+              value={auteurFilter}
+              onChange={e => setAuteurFilter(e.target.value)}
+              style={{
+                padding: '6px 10px', borderRadius: 8, fontSize: 12, minWidth: 150,
+                border: '1px solid var(--border)', fontFamily: 'DM Sans, sans-serif',
+                color: 'var(--text)', background: 'white', outline: 'none', cursor: 'pointer',
+              }}
+            >
+              <option value="">Tous auteurs</option>
+              {auteurOptions.map(a => (
+                <option key={a} value={a}>👤 {a}</option>
+              ))}
+            </select>
+          )}
+
+          {/* Reset all */}
+          {hasActiveFilter && (
+            <button
+              onClick={resetExtraFilters}
+              style={{
+                fontSize: 11, color: 'var(--blue)', background: 'none',
+                border: 'none', cursor: 'pointer', padding: '2px 4px',
+                textDecoration: 'underline', fontFamily: 'DM Sans, sans-serif',
+              }}
+            >
+              Effacer les filtres
+            </button>
+          )}
+        </div>
+
         <div style={{ overflowX: 'auto' }}>
           <table className="tbl">
             <thead>
@@ -1248,9 +1970,511 @@ function RappelsView({
   );
 }
 
+// ─── Anomalies View ───────────────────────────────────────────────────────────
+
+type AnomalieStatusFilter = 'all' | 'pending' | 'done';
+
+function AnomaliesView({
+  data, rappelByConvId, localTreatments, onTreat, onTimeline,
+}: {
+  data: NonNullable<ReturnType<typeof useData>['data']>;
+  rappelByConvId: Map<string, Rappel>;
+  localTreatments: Record<string, TreatmentRecord>;
+  onTreat: (conv_id: string, remarque: string) => Promise<void>;
+  onTimeline: (phone: string) => void;
+}) {
+  const [statusFilter, setStatusFilter] = useState<AnomalieStatusFilter>('all');
+  const [searchPhone,  setSearchPhone]  = useState('');
+  const [motifFilter,  setMotifFilter]  = useState('');
+  const [datePreset,   setDatePreset]   = useState<DatePreset>('all');
+  const [dateFrom,     setDateFrom]     = useState('');
+  const [dateTo,       setDateTo]       = useState('');
+  const [selectedAnomalie,   setSelectedAnomalie]   = useState<RecentCall | null>(null);
+  const [selectedTranscript, setSelectedTranscript] = useState<RecentCall | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [expandedPhones, setExpandedPhones] = useState<Set<string>>(new Set());
+  const PAGE_SIZE = 50;
+
+  const toggleExpand = (phone: string) =>
+    setExpandedPhones(prev => {
+      const next = new Set(prev);
+      next.has(phone) ? next.delete(phone) : next.add(phone);
+      return next;
+    });
+
+  const normalizePhone = (p: string) => String(p || '').replace(/[\s.\-()+]/g, '');
+
+  const applyDatePreset = (p: DatePreset) => {
+    setDatePreset(p);
+    if (p === 'today') { setDateFrom(todayISO);       setDateTo(todayISO); }
+    if (p === 'week')  { setDateFrom(get7DaysAgo());  setDateTo(todayISO); }
+    if (p === 'all')   { setDateFrom('');              setDateTo('');       }
+  };
+
+  const isTraite = (c: RecentCall): boolean => {
+    if (!c.conv_id) return false;
+    if (localTreatments[c.conv_id]) return true;
+    return rappelByConvId.get(c.conv_id)?.statut === 'DONE';
+  };
+
+  const getTreatment = (c: RecentCall): TreatmentRecord | undefined => {
+    if (!c.conv_id) return undefined;
+    if (localTreatments[c.conv_id]) return localTreatments[c.conv_id];
+    const r = rappelByConvId.get(c.conv_id);
+    if (r?.statut === 'DONE') return { statut: 'DONE', diagnostic: '', remarque: r.remarque || '', par: r.rappele_par || '', le: r.rappele_le || '' };
+    return undefined;
+  };
+
+  const toKey = (c: RecentCall) => {
+    if (c.date_full) return `${c.date_full} ${c.heure}`;
+    const [d, m] = c.date.split('/');
+    return `2026-${(m ?? '01').padStart(2, '0')}-${(d ?? '01').padStart(2, '0')} ${c.heure}`;
+  };
+
+  // All anomaly calls (global — for KPIs)
+  const anomalieCalls = useMemo(
+    () => data.recent_calls.filter(c => c.anomalie === 'OUI'),
+    [data.recent_calls]
+  );
+
+  // KPI stats (unfiltered)
+  const totalAnomalies  = anomalieCalls.length;
+  const treatedCount    = anomalieCalls.filter(isTraite).length;
+  const pendingCount    = totalAnomalies - treatedCount;
+  const tauxResolution  = totalAnomalies > 0 ? Math.round(treatedCount / totalAnomalies * 100) : 0;
+
+  // Filtered list
+  const needle = normalizePhone(searchPhone);
+  const filtered = useMemo(() => {
+    return [...anomalieCalls]
+      .sort((a, b) => toKey(b).localeCompare(toKey(a)))
+      .filter(c => {
+        if (statusFilter === 'pending' && isTraite(c)) return false;
+        if (statusFilter === 'done'    && !isTraite(c)) return false;
+        if (needle && !normalizePhone(c.phone || '').includes(needle)) return false;
+        if (motifFilter && c.motif_ia !== motifFilter) return false;
+        if (dateFrom || dateTo) {
+          const d = c.date_full ?? toKey(c).slice(0, 10);
+          if (dateFrom && d < dateFrom) return false;
+          if (dateTo   && d > dateTo)   return false;
+        }
+        return true;
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anomalieCalls, statusFilter, needle, motifFilter, dateFrom, dateTo, localTreatments, rappelByConvId]);
+
+  // Group filtered calls by phone number
+  const allGroups = useMemo(() => {
+    const isPending = (c: RecentCall) =>
+      !c.conv_id || (!localTreatments[c.conv_id] && rappelByConvId.get(c.conv_id)?.statut !== 'DONE');
+
+    const map = new Map<string, RecentCall[]>();
+    for (const c of filtered) {
+      const key = String(c.phone || '—').trim();
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(c);
+    }
+    const groups: { phone: string; all: RecentCall[]; latest: RecentCall; pendingCount: number }[] = [];
+    map.forEach((all, phone) => {
+      // already sorted most-recent-first by the filtered memo
+      const pendingCount = all.filter(isPending).length;
+      groups.push({ phone, all, latest: all[0], pendingCount });
+    });
+    return groups.sort((a, b) => {
+      if ((a.pendingCount > 0) !== (b.pendingCount > 0)) return a.pendingCount > 0 ? -1 : 1;
+      const ka = `${a.latest.date_full ?? a.latest.date} ${a.latest.heure}`;
+      const kb = `${b.latest.date_full ?? b.latest.date} ${b.latest.heure}`;
+      return kb.localeCompare(ka);
+    });
+  }, [filtered, localTreatments, rappelByConvId]);
+
+  const totalPages = Math.max(1, Math.ceil(allGroups.length / PAGE_SIZE));
+  const safePage   = Math.min(currentPage, totalPages);
+  if (safePage !== currentPage) setTimeout(() => setCurrentPage(safePage), 0);
+  const pagedGroups = allGroups.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const motifOptions = Array.from(new Set(anomalieCalls.map(c => c.motif_ia).filter(Boolean))).sort();
+
+  // Charts
+  const barData = {
+    labels: data.calls_by_day.map(d => d.date),
+    datasets: [{
+      label: 'Anomalies',
+      data: data.calls_by_day.map(d => d.anomalies),
+      backgroundColor: '#fca5a5',
+      borderColor: '#ef4444',
+      borderWidth: 2,
+      borderRadius: 6,
+      borderSkipped: false,
+    }],
+  };
+  const barOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { family: 'DM Sans', size: 11 }, color: '#94aab9' }, border: { display: false } },
+      y: { grid: { color: '#fef2f2' }, ticks: { font: { family: 'DM Sans', size: 11 }, color: '#94aab9', precision: 0 }, border: { display: false } },
+    },
+  };
+
+  const motifCounts = anomalieCalls.reduce((acc, c) => {
+    const k = MOTIF_LABELS[c.motif_ia] || c.motif_ia;
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const donutLabels = Object.keys(motifCounts);
+  const donutData = {
+    labels: donutLabels,
+    datasets: [{
+      data: donutLabels.map(k => motifCounts[k]),
+      backgroundColor: ['#ef4444', '#f97316', '#eab308', '#8b5cf6', '#06b6d4', '#14b8a6'],
+      borderWidth: 3, borderColor: '#fff',
+    }],
+  };
+  const donutOpts = {
+    responsive: true, maintainAspectRatio: false, cutout: '68%',
+    plugins: {
+      legend: {
+        position: 'bottom' as const,
+        labels: { font: { family: 'DM Sans', size: 12 }, color: '#607d94', padding: 14, boxWidth: 10 },
+      },
+    },
+  };
+
+  const inputStyle: React.CSSProperties = {
+    padding: '4px 10px', borderRadius: 8, fontSize: 12,
+    border: '1px solid var(--border)', fontFamily: 'DM Sans,sans-serif',
+    color: 'var(--text)', background: 'white', outline: 'none',
+    cursor: 'pointer', colorScheme: 'light' as React.CSSProperties['colorScheme'],
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+
+      {/* Panels */}
+      {selectedTranscript && (
+        <TranscriptPanel call={selectedTranscript} onClose={() => setSelectedTranscript(null)} />
+      )}
+      {selectedAnomalie && (
+        <AnomalieTraitementModal
+          call={selectedAnomalie}
+          rappel={selectedAnomalie.conv_id ? rappelByConvId.get(selectedAnomalie.conv_id) : undefined}
+          treatment={selectedAnomalie.conv_id ? localTreatments[selectedAnomalie.conv_id] : undefined}
+          onClose={() => setSelectedAnomalie(null)}
+          onTreat={onTreat}
+          onViewTranscript={selectedAnomalie.transcript ? () => {
+            const c = selectedAnomalie;
+            setSelectedAnomalie(null);
+            setSelectedTranscript(c);
+          } : undefined}
+        />
+      )}
+
+      {/* KPI cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
+        <KPICard value={totalAnomalies}           label="Total anomalies"  icon={AlertTriangle} delay="0s"    accentColor="#ef4444"       bgColor="#fef2f2" />
+        <KPICard value={pendingCount}             label="Non traitées"      icon={Circle}        delay="0.06s" accentColor="#f97316"       bgColor="#fff7ed" />
+        <KPICard value={treatedCount}             label="Traitées"          icon={CheckCircle}   delay="0.12s" accentColor="#22c55e"       bgColor="#f0fdf4" />
+        <KPICard value={`${tauxResolution}%`}     label="Taux résolution"   icon={BarChart2}     delay="0.18s" accentColor="var(--blue)"   bgColor="var(--blue-light)" />
+      </div>
+
+      {/* Charts */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <div className="card animate-fade-up-3" style={{ padding: '22px 24px' }}>
+          <p className="section-label">Anomalies par jour — 7 jours</p>
+          <div style={{ height: 200 }}><Bar data={barData} options={barOpts} /></div>
+        </div>
+        <div className="card animate-fade-up-4" style={{ padding: '22px 24px' }}>
+          <p className="section-label">Répartition par motif</p>
+          {donutLabels.length > 0
+            ? <div style={{ height: 200 }}><Doughnut data={donutData} options={donutOpts} /></div>
+            : <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 13 }}>Aucune anomalie</div>
+          }
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="card animate-fade-up" style={{ overflow: 'hidden' }}>
+
+        {/* Header + status tabs */}
+        <div style={{
+          padding: '14px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={14} style={{ color: '#ef4444' }} />
+            <h3 style={{ fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 15 }}>
+              Liste des anomalies
+            </h3>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              {allGroups.length !== anomalieCalls.length
+                ? `${filtered.length} appels · ${allGroups.length} numéros`
+                : `${anomalieCalls.length} appels · ${allGroups.length} numéros`}
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {([
+              { k: 'all'     as AnomalieStatusFilter, label: 'Toutes' },
+              { k: 'pending' as AnomalieStatusFilter, label: '⏳ Non traitées' },
+              { k: 'done'    as AnomalieStatusFilter, label: '✅ Traitées' },
+            ]).map(({ k, label }) => (
+              <button key={k} className={`filter-tab${statusFilter === k ? ' active' : ''}`}
+                onClick={() => { setStatusFilter(k); setCurrentPage(1); }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Date preset bar */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          background: '#fff8f8',
+        }}>
+          {([
+            { key: 'all'   as DatePreset, label: 'Tout' },
+            { key: 'today' as DatePreset, label: "Aujourd'hui" },
+            { key: 'week'  as DatePreset, label: '7 jours' },
+          ]).map(({ key, label }) => (
+            <button key={key} className={`filter-tab${datePreset === key ? ' active' : ''}`}
+              onClick={() => { applyDatePreset(key); setCurrentPage(1); }}>
+              {label}
+            </button>
+          ))}
+          <span style={{ width: 1, height: 20, background: 'var(--border)', flexShrink: 0, margin: '0 2px' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input type="date" value={dateFrom} max={dateTo || todayISO} style={inputStyle}
+              onChange={e => { setDateFrom(e.target.value); setDatePreset('custom'); setCurrentPage(1); }} />
+            <span style={{ fontSize: 11, color: 'var(--muted)' }}>→</span>
+            <input type="date" value={dateTo} min={dateFrom} max={todayISO} style={inputStyle}
+              onChange={e => { setDateTo(e.target.value); setDatePreset('custom'); setCurrentPage(1); }} />
+          </div>
+          {datePreset === 'custom' && (
+            <button onClick={() => { applyDatePreset('all'); setCurrentPage(1); }}
+              style={{ fontSize: 11, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'DM Sans,sans-serif', padding: '2px 4px' }}>
+              Réinitialiser
+            </button>
+          )}
+        </div>
+
+        {/* Search + motif filter */}
+        <div style={{
+          padding: '10px 24px', borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          background: 'white',
+        }}>
+          <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 200, maxWidth: 320 }}>
+            <Search size={13} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', pointerEvents: 'none' }} />
+            <input type="search" value={searchPhone}
+              onChange={e => { setSearchPhone(e.target.value); setCurrentPage(1); }}
+              placeholder="Rechercher un numéro…"
+              style={{ ...inputStyle, width: '100%', paddingLeft: 30, cursor: 'text' }}
+            />
+            {searchPhone && (
+              <button onClick={() => { setSearchPhone(''); setCurrentPage(1); }}
+                style={{ position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)', background: 'var(--blue-faint)', border: 'none', borderRadius: 5, cursor: 'pointer', padding: 3, display: 'flex' }}>
+                <X size={11} style={{ color: 'var(--muted)' }} />
+              </button>
+            )}
+          </div>
+          <select value={motifFilter} onChange={e => { setMotifFilter(e.target.value); setCurrentPage(1); }}
+            style={{ ...inputStyle, minWidth: 130 }}>
+            <option value="">Tous motifs</option>
+            {motifOptions.map(m => <option key={m} value={m}>{MOTIF_LABELS[m] || m}</option>)}
+          </select>
+          {(searchPhone || motifFilter || dateFrom || dateTo) && (
+            <button onClick={() => { setSearchPhone(''); setMotifFilter(''); applyDatePreset('all'); setCurrentPage(1); }}
+              style={{ fontSize: 11, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'DM Sans,sans-serif', padding: '2px 4px' }}>
+              Effacer les filtres
+            </button>
+          )}
+        </div>
+
+        {/* Table */}
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Date / Heure</th>
+                <th>Numéro</th>
+                <th>Motif IA</th>
+                <th>Sentiment</th>
+                <th>Durée</th>
+                <th>Traitement</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedGroups.length === 0 ? (
+                <tr>
+                  <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+                    {statusFilter === 'done'    ? '📭 Aucune anomalie traitée' :
+                     statusFilter === 'pending' ? '✅ Toutes les anomalies sont traitées !' :
+                     '📭 Aucune anomalie sur cette période'}
+                  </td>
+                </tr>
+              ) : pagedGroups.map(g => {
+                const expanded    = expandedPhones.has(g.phone);
+                const hasMultiple = g.all.length > 1;
+
+                const AnomalieRow = ({ c, sub }: { c: RecentCall; sub?: boolean }) => {
+                  const traite    = isTraite(c);
+                  const treatment = getTreatment(c);
+                  const rappel    = c.conv_id ? rappelByConvId.get(c.conv_id) : undefined;
+                  const reason    = rappel ? (CALLBACK_LABELS[rappel.motif] || rappel.motif) : undefined;
+                  return (
+                    <tr style={{ opacity: traite ? 0.72 : 1, background: sub ? 'var(--bg)' : undefined }}>
+                      <td style={{ whiteSpace: 'nowrap', paddingLeft: sub ? 32 : undefined }}>
+                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>{c.date}</span>
+                        <span style={{ fontWeight: 600, fontFamily: 'Lexend,sans-serif', marginLeft: 6 }}>{c.heure}</span>
+                      </td>
+                      <td>—</td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                          <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: 'var(--blue-light)', color: 'var(--blue-dark)', fontWeight: 600, display: 'inline-block' }}>
+                            {MOTIF_LABELS[c.motif_ia] || c.motif_ia}
+                          </span>
+                          {reason && (
+                            <span style={{ fontSize: 10, padding: '2px 7px', borderRadius: 5, background: '#fef2f2', color: '#dc2626', fontWeight: 600, display: 'inline-block' }}>
+                              ⚠ {reason}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: SENT_COLORS[c.sentiment] || '#94a3b8' }}>
+                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: SENT_COLORS[c.sentiment] || '#94a3b8', flexShrink: 0 }} />
+                          {c.sentiment.charAt(0).toUpperCase() + c.sentiment.slice(1)}
+                        </span>
+                      </td>
+                      <td style={{ fontFamily: 'monospace', color: 'var(--muted)', fontSize: 13 }}>{c.duration}s</td>
+                      <td style={{ minWidth: 200 }}>
+                        {traite ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                            <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#f0fdf4', color: '#16a34a', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                              <CheckCircle size={10} /> Clôturé
+                            </span>
+                            {treatment?.le && (
+                              <span style={{ fontSize: 11, color: 'var(--muted)' }}>👤 {treatment.par || '—'} · {treatment.le}</span>
+                            )}
+                            {treatment?.remarque && (
+                              <span style={{
+                                fontSize: 11, color: '#475569', fontStyle: 'italic',
+                                background: '#f8fafc', padding: '2px 7px', borderRadius: 5,
+                                borderLeft: '2px solid #cbd5e1',
+                                maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block',
+                              }}>
+                                {treatment.remarque}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, background: '#fff7ed', color: '#c2410c', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                            <Circle size={9} /> À traiter
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            onClick={() => setSelectedAnomalie(c)}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              padding: '4px 10px', borderRadius: 7, fontSize: 12,
+                              fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+                              cursor: 'pointer', border: 'none',
+                              background: traite ? '#e2f4ec' : '#dc2626',
+                              color: traite ? '#16a34a' : 'white',
+                            }}
+                          >
+                            {traite ? <><CheckCircle size={12} /> Détails</> : <><AlertTriangle size={12} /> Traiter</>}
+                          </button>
+                          {c.transcript && (
+                            <button onClick={() => setSelectedTranscript(c)} className="btn btn-ghost btn-sm">
+                              <MessageSquare size={13} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                };
+
+                return (
+                  <React.Fragment key={`grp-${g.phone}`}>
+                    {/* Group header — phone */}
+                    <tr style={{ background: '#f8fafc' }}>
+                      <td colSpan={7} style={{ padding: '6px 16px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div className="phone-cell">
+                            <PhoneLink phone={g.phone} />
+                            {g.phone && g.phone !== '—' && (
+                              <button className="phone-timeline-btn" title="Historique patient" onClick={() => onTimeline(g.phone)}>
+                                <History size={12} />
+                              </button>
+                            )}
+                          </div>
+                          {hasMultiple && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              style={{ fontSize: 11, padding: '2px 8px' }}
+                              onClick={() => toggleExpand(g.phone)}
+                            >
+                              {expanded ? '▲' : '▼'} {g.all.length} anomalie{g.all.length > 1 ? 's' : ''}
+                            </button>
+                          )}
+                          {g.pendingCount > 0 ? (
+                            <span style={{ fontSize: 11, color: '#f97316', fontWeight: 600 }}>
+                              {g.pendingCount} à traiter
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>✓ Tout traité</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {/* Latest call — always visible */}
+                    <AnomalieRow c={g.latest} />
+                    {/* Rest — shown when expanded */}
+                    {expanded && g.all.slice(1).map((c, i) => (
+                      <AnomalieRow key={`sub-${c.conv_id ?? i}`} c={c} sub />
+                    ))}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div style={{
+            padding: '12px 24px', borderTop: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            background: '#fff8f8', flexWrap: 'wrap', gap: 10,
+          }}>
+            <span style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'DM Sans,sans-serif' }}>
+              Affichage <strong style={{ color: 'var(--text)' }}>
+                {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, allGroups.length)}
+              </strong> sur <strong style={{ color: 'var(--text)' }}>{allGroups.length}</strong> numéros
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={safePage === 1} style={{ opacity: safePage === 1 ? 0.35 : 1 }}>‹ Précédent</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={safePage === totalPages} style={{ opacity: safePage === totalPages ? 0.35 : 1 }}>Suivant ›</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-type View = 'overview' | 'appels' | 'rappels' | 'users';
+type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users';
 
 export default function App() {
   const { user, login, logout }       = useAuth();
@@ -1258,6 +2482,29 @@ export default function App() {
   const [view, setView]               = useState<View>('overview');
   const [refreshing, setRefreshing]   = useState(false);
   const [timelinePhone, setTimelinePhone] = useState<string | null>(null);
+
+  // ── Anomalie treatment state (shared across AppelsView & AnomaliesView) ───
+  const [localTreatments, setLocalTreatments] = useState<Record<string, TreatmentRecord>>({});
+
+  const rappelByConvId = useMemo(
+    () => new Map((data?.rappels ?? []).filter(r => r.conv_id).map(r => [r.conv_id!, r])),
+    [data?.rappels]
+  );
+
+  const onTreat = useCallback(async (conv_id: string, remarque: string) => {
+    const nom = user?.nom || user?.username || '';
+    const now = new Date().toLocaleString('fr-FR', {
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+    setLocalTreatments(prev => ({
+      ...prev,
+      [conv_id]: { statut: 'DONE', diagnostic: '', remarque, par: nom, le: now },
+    }));
+    await markRappelDone(conv_id, nom, remarque);
+  }, [user]);
+
+  // Reset local treatments when fresh data arrives
+  useEffect(() => { setLocalTreatments({}); }, [data]);
 
   const openTimeline = (phone: string) => setTimelinePhone(phone);
 
@@ -1271,17 +2518,19 @@ export default function App() {
   };
 
   const navItems: { id: View; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
-    { id: 'overview', label: "Vue d'ensemble", icon: BarChart2  },
-    { id: 'appels',   label: 'Appels récents',  icon: PhoneCall },
-    { id: 'rappels',  label: 'Rappels',          icon: Bell      },
-    { id: 'users',    label: 'Utilisateurs',     icon: Users, adminOnly: true },
+    { id: 'overview',  label: "Vue d'ensemble",  icon: BarChart2     },
+    { id: 'appels',    label: 'Appels récents',   icon: PhoneCall     },
+    { id: 'rappels',   label: 'Rappels',           icon: Bell          },
+    { id: 'anomalies', label: 'Anomalies',         icon: AlertTriangle },
+    { id: 'users',     label: 'Utilisateurs',      icon: Users, adminOnly: true },
   ];
 
   const titleMap: Record<View, string> = {
-    overview: "Vue d'ensemble",
-    appels:   'Appels récents',
-    rappels:  'Rappels',
-    users:    'Utilisateurs',
+    overview:  "Vue d'ensemble",
+    appels:    'Appels récents',
+    rappels:   'Rappels',
+    anomalies: 'Anomalies',
+    users:     'Utilisateurs',
   };
 
   return (
@@ -1367,6 +2616,21 @@ export default function App() {
                   {data.kpis.rappels_pending}
                 </span>
               )}
+              {id === 'anomalies' && data && (() => {
+                const unresolved = data.recent_calls.filter(c =>
+                  c.anomalie === 'OUI' && c.conv_id && !localTreatments[c.conv_id] &&
+                  rappelByConvId.get(c.conv_id)?.statut !== 'DONE'
+                ).length;
+                return unresolved > 0 ? (
+                  <span style={{
+                    marginLeft: 'auto', background: '#dc2626', color: 'white',
+                    fontSize: 10, fontWeight: 700, borderRadius: 20, padding: '1px 7px',
+                    fontFamily: 'Lexend,sans-serif',
+                  }}>
+                    {unresolved}
+                  </span>
+                ) : null;
+              })()}
             </button>
           ))}
         </nav>
@@ -1452,10 +2716,27 @@ export default function App() {
           </div>
         ) : data ? (
           <>
-            {view === 'overview' && <Overview data={data} />}
-            {view === 'appels'   && <AppelsView  data={data} onTimeline={openTimeline} />}
-            {view === 'rappels'  && <RappelsView data={data} onTimeline={openTimeline} />}
-            {view === 'users'    && user.role === 'admin' && <UsersView currentUser={user} />}
+            {view === 'overview'  && <Overview data={data} rappelByConvId={rappelByConvId} localTreatments={localTreatments} />}
+            {view === 'appels'    && (
+              <AppelsView
+                data={data}
+                onTimeline={openTimeline}
+                rappelByConvId={rappelByConvId}
+                localTreatments={localTreatments}
+                onTreat={onTreat}
+              />
+            )}
+            {view === 'rappels'   && <RappelsView data={data} onTimeline={openTimeline} />}
+            {view === 'anomalies' && (
+              <AnomaliesView
+                data={data}
+                rappelByConvId={rappelByConvId}
+                localTreatments={localTreatments}
+                onTreat={onTreat}
+                onTimeline={openTimeline}
+              />
+            )}
+            {view === 'users'     && user.role === 'admin' && <UsersView currentUser={user} />}
           </>
         ) : (
           <div style={{ textAlign: 'center', color: 'var(--muted)', marginTop: 80, fontSize: 14 }}>
