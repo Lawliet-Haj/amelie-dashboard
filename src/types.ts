@@ -26,6 +26,9 @@ export interface Rappel {
   priorite: 'URGENT' | 'NORMAL';
   statut?: 'PENDING' | 'DONE';
   transcript?: string;
+  rappele_le?: string;  // "DD/MM/YYYY HH:MM" — filled by W10 on mark done
+  rappele_par?: string; // nom of the user who marked it
+  remarque?: string;    // optional note left by the user who called back
 }
 
 export interface RecentCall {
@@ -40,6 +43,24 @@ export interface RecentCall {
   anomalie: 'OUI' | 'NON';
   transcript?: string;
   conv_id?: string;
+}
+
+export interface AuthUser {
+  token: string;
+  username: string;
+  nom: string;
+  role: 'admin' | 'conseillere';
+}
+
+export interface DashboardUser {
+  id: string;
+  username: string;
+  nom: string;
+  email: string;
+  role: 'admin' | 'conseillere';
+  actif: boolean;
+  created_at: string;
+  last_login: string;
 }
 
 export interface DashboardData {

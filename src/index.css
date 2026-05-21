@@ -214,3 +214,101 @@ h1, h2, h3, h4 { font-family: 'Lexend', sans-serif; }
   font-family: 'Lexend', sans-serif; background: white; color: var(--muted);
 }
 .filter-tab.active { background: var(--blue); color: white; border-color: var(--blue); }
+
+/* ── Urgent toast ──────────────────────────────────────────── */
+@keyframes toastSlide {
+  from { opacity: 0; transform: translateY(-14px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)     scale(1); }
+}
+.urgent-toast {
+  position: fixed; top: 18px; right: 18px; z-index: 100;
+  display: flex; align-items: center; gap: 10px;
+  background: #dc2626; color: white;
+  padding: 11px 14px; border-radius: 12px;
+  font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 600;
+  box-shadow: 0 6px 24px rgba(220,38,38,.4);
+  cursor: pointer;
+  animation: toastSlide 0.3s cubic-bezier(.2,.8,.4,1) both;
+  user-select: none;
+}
+.urgent-toast:hover { background: #b91c1c; }
+.toast-dismiss {
+  background: rgba(255,255,255,.25); border: none; border-radius: 6px;
+  color: white; width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0; padding: 0;
+}
+.toast-dismiss:hover { background: rgba(255,255,255,.4); }
+
+/* ── Aging badge ───────────────────────────────────────────── */
+.age-fresh  { font-size: 10px; padding: 2px 7px; border-radius: 5px; background: #f0fdf4; color: #16a34a; font-weight: 600; white-space: nowrap; }
+.age-warn   { font-size: 10px; padding: 2px 7px; border-radius: 5px; background: #fff7ed; color: #ea580c; font-weight: 700; white-space: nowrap; }
+.age-late   { font-size: 10px; padding: 2px 7px; border-radius: 5px; background: #fef2f2; color: #dc2626; font-weight: 700; white-space: nowrap; animation: livePulse 2s ease-in-out infinite; }
+
+/* ── Timeline card ─────────────────────────────────────────── */
+.timeline-card {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  transition: box-shadow 0.15s;
+}
+.timeline-card:hover { box-shadow: 0 2px 10px rgba(26,43,66,.09); }
+.timeline-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 11px 14px; cursor: pointer; gap: 8px;
+}
+.timeline-card-header:hover { background: var(--blue-faint); }
+.timeline-card-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border);
+}
+.timeline-transcript {
+  display: flex; flex-direction: column; gap: 9px; padding-top: 12px;
+}
+
+/* ── Phone timeline btn ────────────────────────────────────── */
+.phone-timeline-btn {
+  border: none; background: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--blue-mid); padding: 2px 4px; border-radius: 4px;
+  opacity: 0; transition: opacity 0.15s;
+  font-size: 11px;
+}
+tr:hover .phone-timeline-btn,
+.phone-cell:hover .phone-timeline-btn { opacity: 1; }
+.phone-cell { display: flex; align-items: center; gap: 4px; }
+/* ── Login page ────────────────────────────────────────────── */
+.login-page {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+}
+.login-card {
+  background: white; border: 1px solid var(--border); border-radius: 20px;
+  padding: 40px 36px; width: 380px;
+  box-shadow: 0 8px 40px rgba(26,43,66,.1);
+  animation: fadeUp 0.35s ease-out both;
+}
+.login-input {
+  width: 100%; padding: 10px 13px; border-radius: 10px; font-size: 14px;
+  border: 1px solid var(--border); font-family: 'DM Sans', sans-serif;
+  color: var(--text); outline: none; transition: border-color .15s;
+  box-sizing: border-box;
+}
+.login-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(45,127,194,.12); }
+.login-error {
+  background: #fef2f2; border: 1px solid #fca5a5; color: #dc2626;
+  padding: 10px 14px; border-radius: 9px; font-size: 13px;
+}
+
+/* ── Modal dialog ──────────────────────────────────────────── */
+.modal-dialog {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  background: white; border-radius: 18px; padding: 28px 28px 24px;
+  width: min(480px, 92vw);
+  box-shadow: 0 20px 60px rgba(26,43,66,.18);
+  z-index: 60;
+}
+
+.auto-refresh-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--blue-mid);
+  animation: livePulse 2s ease-in-out infinite;
+  display: inline-block; margin-left: 4px;
+}

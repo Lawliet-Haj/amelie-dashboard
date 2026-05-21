@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DashboardData } from '../types';
 
 const API_URL = 'https://n8n.srv778935.hstgr.cloud/webhook/dashboard-data';
@@ -74,10 +74,13 @@ const MOCK: DashboardData = {
 };
 
 export function useData() {
-  const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [data, setData]               = useState<DashboardData | null>(null);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [hasNewUrgent, setHasNewUrgent] = useState(false);
+  const prevUrgentRef = useRef<number>(0);
+  const isFirstFetch  = useRef(true);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -85,9 +88,16 @@ export function useData() {
     try {
       const res = await fetch(API_URL, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json: DashboardData = await res.json();
+      const urgentNow = json.rappels.filter(r => r.priorite === 'URGENT' && r.statut !== 'DONE').length;
+      if (!isFirstFetch.current && urgentNow > prevUrgentRef.current) {
+        setHasNewUrgent(true);
+      }
+      prevUrgentRef.current = urgentNow;
+      isFirstFetch.current = false;
       setData(json);
     } catch {
+      isFirstFetch.current = false;
       setData(MOCK);
     } finally {
       setLoading(false);
@@ -95,7 +105,16 @@ export function useData() {
     }
   }, []);
 
+  // Initial fetch
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  return { data, loading, error, refresh: fetchData, lastRefresh };
+  // Auto-refresh every 30 s
+  useEffect(() => {
+    const id = setInterval(fetchData, 30_000);
+    return () => clearInterval(id);
+  }, [fetchData]);
+
+  const dismissNewUrgent = useCallback(() => setHasNewUrgent(false), []);
+
+  return { data, loading, error, refresh: fetchData, lastRefresh, hasNewUrgent, dismissNewUrgent };
 }
