@@ -8,11 +8,12 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Phone, AlertTriangle, Clock, Bell, RefreshCw,
   BarChart2, PhoneCall, X, MessageSquare, CheckCircle,
-  Circle, Filter, History, Users, LogOut, Search,
+  Circle, Filter, History, Users, LogOut, Search, Briefcase,
 } from 'lucide-react';
 import { useData } from './hooks/useData';
 import { useAuth } from './hooks/useAuth';
 import { UsersView } from './views/UsersView';
+import { RecouvrementView } from './views/RecouvrementView';
 import type { Rappel, RecentCall } from './types';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
@@ -2484,12 +2485,17 @@ function AnomaliesView({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users';
+type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvrement';
 
 export default function App() {
   const { user, login, logout }       = useAuth();
   const { data, loading, refresh, lastRefresh, hasNewUrgent, dismissNewUrgent } = useData();
   const [view, setView]               = useState<View>('overview');
+
+  // Redirect recouvrement role to their view on login
+  useEffect(() => {
+    if (user?.role === 'recouvrement') setView('recouvrement');
+  }, [user?.role]);
   const [refreshing, setRefreshing]   = useState(false);
   const [timelinePhone, setTimelinePhone] = useState<string | null>(null);
 
@@ -2529,27 +2535,29 @@ export default function App() {
     setTimeout(() => setRefreshing(false), 700);
   };
 
-  const navItems: { id: View; label: string; icon: React.ElementType; adminOnly?: boolean }[] = [
-    { id: 'overview',  label: "Vue d'ensemble",  icon: BarChart2     },
-    { id: 'appels',    label: 'Appels récents',   icon: PhoneCall     },
-    { id: 'rappels',   label: 'Rappels',           icon: Bell          },
-    { id: 'anomalies', label: 'Anomalies',         icon: AlertTriangle },
-    { id: 'users',     label: 'Utilisateurs',      icon: Users, adminOnly: true },
+  const navItems: { id: View; label: string; icon: React.ElementType; visibleRoles?: string[] }[] = [
+    { id: 'overview',     label: "Vue d'ensemble",  icon: BarChart2,     visibleRoles: ['admin', 'conseillere'] },
+    { id: 'appels',       label: 'Appels récents',   icon: PhoneCall,     visibleRoles: ['admin', 'conseillere'] },
+    { id: 'rappels',      label: 'Rappels',           icon: Bell,          visibleRoles: ['admin', 'conseillere'] },
+    { id: 'anomalies',    label: 'Anomalies',         icon: AlertTriangle, visibleRoles: ['admin', 'conseillere'] },
+    { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement'] },
+    { id: 'users',        label: 'Utilisateurs',      icon: Users,         visibleRoles: ['admin'] },
   ];
 
   const titleMap: Record<View, string> = {
-    overview:  "Vue d'ensemble",
-    appels:    'Appels récents',
-    rappels:   'Rappels',
-    anomalies: 'Anomalies',
-    users:     'Utilisateurs',
+    overview:     "Vue d'ensemble",
+    appels:       'Appels récents',
+    rappels:      'Rappels',
+    anomalies:    'Anomalies',
+    recouvrement: 'Recouvrement',
+    users:        'Utilisateurs',
   };
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--bg)' }}>
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
 
       {/* ── Urgent toast ─────────────────────────────────────── */}
-      {hasNewUrgent && (
+      {hasNewUrgent && user.role !== 'recouvrement' && (
         <div
           className="urgent-toast"
           onClick={() => { setView('rappels'); dismissNewUrgent(); }}
@@ -2577,10 +2585,10 @@ export default function App() {
 
       {/* ── Sidebar ─────────────────────────────────────────── */}
       <aside style={{
-        width: 240, minHeight: '100vh', background: 'white',
+        width: 240, background: 'white',
         borderRight: '1px solid var(--border)',
         display: 'flex', flexDirection: 'column',
-        position: 'sticky', top: 0, height: '100vh', flexShrink: 0,
+        height: '100vh', flexShrink: 0, overflow: 'hidden',
       }}>
         {/* Brand */}
         <div style={{ padding: '20px 18px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -2610,7 +2618,7 @@ export default function App() {
             color: '#94aab9', padding: '0 8px', marginBottom: 8, fontFamily: 'Lexend,sans-serif',
           }}>Navigation</p>
           {navItems
-            .filter(item => !item.adminOnly || user.role === 'admin')
+            .filter(item => !item.visibleRoles || item.visibleRoles.includes(user.role))
             .map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -2659,7 +2667,9 @@ export default function App() {
               width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
               background: user.role === 'admin'
                 ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
-                : 'linear-gradient(135deg,#2d7fc2,#1a5ea0)',
+                : user.role === 'recouvrement'
+                  ? 'linear-gradient(135deg,#d97706,#b45309)'
+                  : 'linear-gradient(135deg,#2d7fc2,#1a5ea0)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 13, fontWeight: 800, color: 'white', fontFamily: 'Lexend,sans-serif',
             }}>
@@ -2670,7 +2680,7 @@ export default function App() {
                 {user.nom}
               </div>
               <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
-                {user.role === 'admin' ? '🛡 Admin' : '👤 Conseillère'}
+                {user.role === 'admin' ? '🛡 Admin' : user.role === 'recouvrement' ? '💼 Recouvrement' : '👤 Conseillère'}
               </div>
             </div>
             <button
@@ -2697,7 +2707,7 @@ export default function App() {
       </aside>
 
       {/* ── Main ────────────────────────────────────────────── */}
-      <main style={{ flex: 1, padding: '28px 32px', overflow: 'auto', minWidth: 0 }}>
+      <main style={{ flex: 1, padding: '28px 32px', overflow: 'auto', minWidth: 0, minHeight: 0, overscrollBehavior: 'contain' }}>
         {/* Page header */}
         <div
           className="animate-fade-up"
@@ -2718,7 +2728,9 @@ export default function App() {
         </div>
 
         {/* Content */}
-        {loading && !data ? (
+        {view === 'recouvrement' ? (
+          <RecouvrementView user={user} />
+        ) : loading && !data ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
             justifyContent: 'center', height: 400, gap: 14, color: 'var(--muted)',

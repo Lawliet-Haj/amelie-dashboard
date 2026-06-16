@@ -49,7 +49,7 @@ export interface AuthUser {
   token: string;
   username: string;
   nom: string;
-  role: 'admin' | 'conseillere';
+  role: 'admin' | 'conseillere' | 'recouvrement';
 }
 
 export interface DashboardUser {
@@ -57,10 +57,58 @@ export interface DashboardUser {
   username: string;
   nom: string;
   email: string;
-  role: 'admin' | 'conseillere';
+  role: 'admin' | 'conseillere' | 'recouvrement';
   actif: boolean;
   created_at: string;
   last_login: string;
+}
+
+export interface Relance {
+  id: number;
+  nom: string | null;
+  prenom?: string | null;             // optional first name (split from nom if absent)
+  telephone: string | null;
+  date_echeance: string | null;
+  date_debut_location?: string | null; // date de début de location (YYYY-MM-DD)
+  statut: 'À appeler' | 'Non répondu' | 'Répondeur' | 'Répondu SMS' | 'Répondu transfert';
+  nb_tentatives: number;
+  dernier_appel: string | null;
+  resultat: string | null;
+  conv_id: string | null;
+  importe_le: string | null;
+  notes: string | null;
+  updated_at: string | null;
+  // Post-call enrichment (populated by W3 outbound branch)
+  transcript?: string | null;
+  duree_sec?: number | null;
+  sentiment?: string | null;
+  resultat_ia?: string | null;
+  // Batch / campaign tracking
+  batch_id?: string | null;
+  batch_label?: string | null;
+  // SMS failure flag (set by W8 when Brevo delivery fails for an outbound SMS)
+  sms_echec?: boolean | null;
+}
+
+export interface BatchGroup {
+  batch_id: string;
+  batch_label: string | null;
+  date_import: string;
+  total: number;
+  repondu_sms: number;
+  repondu_transfert: number;
+  repondeur: number;
+  non_repondu: number;
+  a_appeler: number;
+}
+
+export interface RelancesStats {
+  total: number;
+  a_appeler: number;
+  non_repondu: number;
+  repondeur: number;
+  repondu_sms: number;
+  repondu_transfert: number;
 }
 
 export interface DashboardData {

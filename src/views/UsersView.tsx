@@ -24,7 +24,7 @@ interface UserFormData {
   username: string;
   nom: string;
   email: string;
-  role: 'admin' | 'conseillere';
+  role: 'admin' | 'conseillere' | 'recouvrement';
   password: string;
 }
 
@@ -41,7 +41,7 @@ function UserModal({
     username: initial?.username ?? '',
     nom:      initial?.nom ?? '',
     email:    initial?.email ?? '',
-    role:     (initial?.role as 'admin' | 'conseillere') ?? 'conseillere',
+    role:     (initial?.role as 'admin' | 'conseillere' | 'recouvrement') ?? 'conseillere',
     password: '',
   });
   const [showPwd, setShowPwd] = useState(false);
@@ -96,6 +96,7 @@ function UserModal({
             <label style={labelCls}>Rôle</label>
             <select style={{ ...inputCls, cursor: 'pointer' }} value={form.role} onChange={set('role')}>
               <option value="conseillere">Conseillère</option>
+              <option value="recouvrement">Recouvrement</option>
               <option value="admin">Administrateur</option>
             </select>
           </div>
@@ -187,7 +188,7 @@ interface BulkRow {
   username: string;
   nom: string;
   email: string;
-  role: 'admin' | 'conseillere';
+  role: 'admin' | 'conseillere' | 'recouvrement';
   password: string;
   status: 'idle' | 'loading' | 'ok' | 'error';
   errorMsg?: string;
@@ -353,10 +354,11 @@ function BulkImportModal({
                 <select
                   style={{ ...inputSm, cursor: running || r.status === 'ok' ? 'not-allowed' : 'pointer' }}
                   value={r.role}
-                  onChange={e => update(r.id, { role: e.target.value as 'admin' | 'conseillere' })}
+                  onChange={e => update(r.id, { role: e.target.value as 'admin' | 'conseillere' | 'recouvrement' })}
                   disabled={running || r.status === 'ok'}
                 >
                   <option value="conseillere">Conseillère</option>
+                  <option value="recouvrement">Recouvrement</option>
                   <option value="admin">Admin</option>
                 </select>
                 {/* Password */}
@@ -627,6 +629,8 @@ export function UsersView({ currentUser }: { currentUser: AuthUser }) {
                             ? 'linear-gradient(135deg,#94a3b8,#64748b)'
                             : u.role === 'admin'
                             ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
+                            : u.role === 'recouvrement'
+                            ? 'linear-gradient(135deg,#d97706,#b45309)'
                             : 'linear-gradient(135deg,#2d7fc2,#1a5ea0)',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 12, fontWeight: 800, color: 'white',
@@ -655,6 +659,10 @@ export function UsersView({ currentUser }: { currentUser: AuthUser }) {
                       {u.role === 'admin' ? (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#ede9fe', color: '#7c3aed', fontWeight: 700, fontFamily: 'Lexend,sans-serif' }}>
                           <ShieldCheck size={11} /> Admin
+                        </span>
+                      ) : u.role === 'recouvrement' ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#fef3c7', color: '#b45309', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
+                          💼 Recouvrement
                         </span>
                       ) : (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: 'var(--blue-light)', color: 'var(--blue-dark)', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
