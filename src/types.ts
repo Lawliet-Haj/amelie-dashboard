@@ -88,6 +88,11 @@ export interface Relance {
   batch_label?: string | null;
   // SMS failure flag (set by W8 when Brevo delivery fails for an outbound SMS)
   sms_echec?: boolean | null;
+  // Call failure tracking — W12 sets 'Échec déclenchement' on trigger failure, W3 sets 'Appel échoué' on technical call failure; cleared on success
+  echec_motif?: string | null;
+  dernier_echec?: string | null;
+  // Patiente a signalé pendant l'appel avoir déjà envoyé son ordonnance (détecté par W3) — à vérifier
+  ordonnance_deja_envoyee?: boolean | null;
 }
 
 export interface BatchGroup {
