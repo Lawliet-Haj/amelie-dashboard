@@ -153,6 +153,14 @@ async function updateRelance(token: string, id: number, fields: object): Promise
 async function deleteRelance(token: string, id: number): Promise<boolean> {
   return updateRelance(token, id, { action: 'delete' });
 }
+// Suppression groupée : un seul appel (DELETE ... WHERE id IN (...)) côté W-Update-Relance.
+async function deleteRelancesBulk(token: string, ids: number[]): Promise<{ ok: boolean; count: number }> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/dashboard-update-relance`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ ids, action: 'delete' }), signal: AbortSignal.timeout(20000) });
+    const j = await r.json();
+    return { ok: !!j.ok, count: j.deleted_count ?? ids.length };
+  } catch { return { ok: false, count: 0 }; }
+}
 // Statut live d'un appel sortant (via W18 → API ElevenLabs). Renvoie null si indisponible.
 async function fetchCallStatus(token: string, convId: string): Promise<string | null> {
   try {
@@ -1309,6 +1317,8 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [historyPhone, setHistoryPhone]     = useState<string | null>(null);
   // Confirm delete
   const [deleteConfirm, setDeleteConfirm]   = useState<number | null>(null);
+  // Bulk delete (sélection → suppression groupée)
+  const [bulkDel, setBulkDel]               = useState<'idle' | 'confirm' | 'deleting'>('idle');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1351,12 +1361,12 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const batchCandidates = filtered.filter(r => selected.has(r.id) && r.telephone && r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert');
 
   function toggleSelect(id: number) { setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
-  // Sélectionne TOUTES les relances à traiter (le batch limite ensuite la concurrence)
+  // Sélectionne TOUTES les lignes affichées (filtrées). Sert à l'appel en lot (re-filtré
+  // sur les appelables via batchCandidates) ET à la suppression groupée (« vider la liste »).
   function selectAll() {
-    const ids = filtered.filter(r => r.telephone && !TRAITES.includes(r.statut)).map(r => r.id);
-    setSelected(new Set(ids));
+    setSelected(new Set(filtered.map(r => r.id)));
   }
-  function clearSelect() { setSelected(new Set()); }
+  function clearSelect() { setSelected(new Set()); setBulkDel('idle'); }
 
   // Lance tous les contacts sélectionnés avec AU PLUS `batchSize` appels actifs à la fois.
   // Concurrence PRÉCISE : chaque slot attend la FIN RÉELLE de son appel (statut EL) avant
@@ -1429,6 +1439,24 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     const ok = await deleteRelance(user.token, id);
     if (ok) { setRelances(prev => prev.filter(r => r.id !== id)); setSelected(p => { const n = new Set(p); n.delete(id); return n; }); }
     setDeleteConfirm(null);
+  }
+
+  async function handleBulkDelete() {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkDel('deleting');
+    const res = await deleteRelancesBulk(user.token, ids);
+    if (res.ok) {
+      const del = new Set(ids);
+      setRelances(prev => prev.filter(r => !del.has(r.id)));
+      clearSelect();
+      setSuccessMsg(`${res.count || ids.length} relance(s) supprimée(s).`);
+      setTimeout(() => setSuccessMsg(''), 4000);
+      load();
+    } else {
+      setError('Échec de la suppression groupée.');
+      setBulkDel('idle');
+    }
   }
 
   function exportCSV() {
@@ -1608,6 +1636,17 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 <button onClick={runBatch} disabled={batchCandidates.length === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
                   <Play size={11} /> Appeler {batchCandidates.length} (≤{batchSize} actifs)
                 </button>
+                {bulkDel === 'confirm' ? (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 11, color: '#dc2626', fontWeight: 700 }}>Supprimer {selected.size} définitivement ?</span>
+                    <button onClick={handleBulkDelete} style={{ padding: '5px 10px', background: '#dc2626', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>Oui, supprimer</button>
+                    <button onClick={() => setBulkDel('idle')} style={{ padding: '5px 10px', background: 'white', border: '1px solid var(--border)', borderRadius: 7, fontSize: 12, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>Annuler</button>
+                  </span>
+                ) : (
+                  <button onClick={() => setBulkDel('confirm')} disabled={bulkDel === 'deleting'} title="Supprimer définitivement les relances sélectionnées" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, fontWeight: 700, color: '#dc2626', cursor: 'pointer' }}>
+                    <Trash2 size={12} /> {bulkDel === 'deleting' ? 'Suppression…' : `Supprimer ${selected.size}`}
+                  </button>
+                )}
                 <button onClick={clearSelect} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4f46e5', display: 'flex' }}><X size={14} /></button>
               </div>
             ) : (
