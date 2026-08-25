@@ -88,6 +88,24 @@ export interface Relance {
   batch_label?: string | null;
   // SMS failure flag (set by W8 when Brevo delivery fails for an outbound SMS)
   sms_echec?: boolean | null;
+  // Suivi d'envoi du SMS ordonnance :
+  //   'envoye'      → W3 : Brevo a accepté l'envoi (messageId reçu), en attente du rapport
+  //   'echec_envoi' → W3 : l'appel API Brevo a échoué (aucun messageId)
+  //   'livre'       → W8 : Brevo confirme la livraison
+  //   'echec'       → W8 : bounce / rejet
+  //   null          → aucun SMS tenté (fixe, statut non éligible) OU panne silencieuse d'envoi
+  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | null;
+  sms_le?: string | null;
+  // Email de relance ordonnance (colonne « Email » de l'export ORTHOP)
+  email?: string | null;
+  // Progression, alimentée par W3 à l'envoi puis par W19 (événements Brevo) :
+  // envoye → livre → ouvert → clique. Un événement ne fait jamais régresser l'état.
+  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | null;
+  email_le?: string | null;
+  email_ouvert_le?: string | null;
+  email_clic_le?: string | null;
+  // Dernier lien cliqué — distingue « envoie son ordonnance » de « veut rendre le matériel »
+  email_clic_url?: string | null;
   // Call failure tracking — W12 sets 'Échec déclenchement' on trigger failure, W3 sets 'Appel échoué' on technical call failure; cleared on success
   echec_motif?: string | null;
   dernier_echec?: string | null;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { read, utils } from 'xlsx';
 import {
   Upload, RefreshCw, Edit2, X, CheckCircle, FileText, AlertCircle,
-  Phone, TrendingUp, PhoneCall, Clock, CheckSquare, Trash2, Download,
+  Phone, TrendingUp, PhoneCall, CheckSquare, Trash2, Download,
   MessageSquare, History, Play, Pause, ChevronRight,
   UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle,
 } from 'lucide-react';
@@ -78,16 +78,35 @@ function normalizePhoneFr(v: string | null | undefined): string {
   return '+33' + p;
 }
 
+/** Nettoie une adresse email (l'export ORTHOP les écrit souvent en MAJUSCULES). Renvoie '' si invalide. */
+function normalizeEmail(v: string | null | undefined): string {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s) return '';
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s) ? s : '';
+}
+
 /** Met un nom tout en majuscules en casse de titre : "MEZOUAR-CHABANE" → "Mezouar-Chabane" */
 function titleCaseName(s: string): string {
   if (!s) return '';
   return s.toLowerCase().replace(/(^|[\s'’.\-])([a-zà-ÿ])/g, (_m, sep, ch) => sep + ch.toUpperCase());
 }
 
-/** Convertit une date FR (Date, "DD/MM/YYYY", "DD-MM-YYYY") en ISO "YYYY-MM-DD" pour <input type=date>. */
+/** Convertit une date FR (Date, sérial Excel, "DD/MM/YYYY", "DD-MM-YYYY") en ISO "YYYY-MM-DD" pour <input type=date>. */
 function parseFrDate(v: unknown): string {
   if (v === null || v === undefined || v === '') return '';
-  if (v instanceof Date) return v.toISOString().substring(0, 10);
+  // ⚠️ Ne PAS utiliser toISOString() directement : la conversion de sérial Excel par la lib
+  // renvoie parfois 23:59:39 la veille (arrondi) — le 22/08 devenait 21/08. On arrondit donc
+  // l'heure locale au jour le plus proche, ce qui absorbe aussi le décalage de fuseau.
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return '';
+    const localMs = v.getTime() - v.getTimezoneOffset() * 60000;
+    return new Date(Math.round(localMs / 86400000) * 86400000).toISOString().substring(0, 10);
+  }
+  // Sérial Excel brut (si la cellule n'est pas formatée en date) : 25569 = 1970-01-01.
+  // Plage 20000–60000 ≈ 1954–2064 : évite de transformer un nombre quelconque en date absurde.
+  if (typeof v === 'number' && Number.isFinite(v) && v >= 20000 && v <= 60000) {
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().substring(0, 10);
+  }
   const s = String(v).trim();
   const fr = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
   if (fr) {
@@ -108,6 +127,113 @@ function isFixe(tel: string | null | undefined): boolean {
   else if (t.startsWith('0033')) t = '0' + t.slice(4);
   return /^0[1-59]/.test(t);
 }
+
+/**
+ * État d'acheminement du SMS ordonnance.
+ * Source : relances.sms_statut (écrit par W3 à l'envoi, par W8 sur rapport Brevo).
+ * « aucun » est volontairement visible : c'est le cas d'une panne silencieuse d'envoi.
+ */
+type SmsEtat = 'livre' | 'envoye' | 'echec' | 'fixe' | 'aucun' | 'na';
+
+const SMS_ETAT_CONFIG: Record<SmsEtat, { label: string; bg: string; color: string; border: string; title: string }> = {
+  livre:  { label: 'SMS livré',       bg: '#ecfdf5',     color: '#047857', border: '#a7f3d0',     title: 'Brevo confirme la livraison du SMS' },
+  envoye: { label: 'SMS envoyé',      bg: '#eff6ff',     color: '#1d4ed8', border: '#bfdbfe',     title: 'Brevo a accepté l’envoi — en attente du rapport de livraison' },
+  echec:  { label: 'SMS non livré',   bg: '#fef2f2',     color: '#b91c1c', border: '#fecaca',     title: 'Le SMS n’est pas arrivé (bounce, rejet, ou échec d’envoi)' },
+  fixe:   { label: 'Fixe · sans SMS', bg: '#f1f5f9',     color: '#475569', border: '#cbd5e1',     title: 'Numéro fixe : aucun SMS n’est envoyé' },
+  aucun:  { label: 'Aucun SMS ⚠',     bg: '#fffbeb',     color: '#b45309', border: '#fde68a',     title: 'Un SMS était attendu mais aucun envoi n’a été enregistré — à vérifier' },
+  na:     { label: '—',               bg: 'transparent', color: '#94a3b8', border: 'transparent', title: 'Aucun SMS attendu à ce stade' },
+};
+
+function smsEtat(r: Relance): SmsEtat {
+  const s = String(r.sms_statut || '').toLowerCase();
+  if (s === 'livre') return 'livre';
+  if (s === 'echec' || s === 'echec_envoi') return 'echec';
+  if (s === 'envoye') return 'envoye';
+  if (r.sms_echec) return 'echec';                                    // lignes antérieures à sms_statut
+  if (isFixe(r.telephone)) return 'fixe';
+  // Un SMS était dû (patiente atteinte ou messagerie) mais rien n'a été tracé → anomalie à voir
+  if (r.statut === 'Répondu SMS' || r.statut === 'Répondeur') return 'aucun';
+  return 'na';
+}
+
+function SmsChip({ r }: { r: Relance }) {
+  const etat = smsEtat(r);
+  const c = SMS_ETAT_CONFIG[etat];
+  if (etat === 'na') return <span style={{ color: c.color, fontSize: 12 }}>{c.label}</span>;
+  return (
+    <span
+      title={r.sms_le ? `${c.title} — ${formatDateTime(r.sms_le)}` : c.title}
+      style={{ display: 'inline-block', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 8, background: c.bg, color: c.color, border: `1px solid ${c.border}`, whiteSpace: 'nowrap' }}
+    >
+      {c.label}
+    </span>
+  );
+}
+
+/**
+ * État du mail de relance (template Brevo 353). Progression écrite par W3 à l'envoi
+ * puis par W19 sur les événements Brevo : envoyé → livré → ouvert → cliqué.
+ * Rien n'est affiché si la relance n'a pas d'adresse email.
+ */
+const MAIL_ETAT_CONFIG: Record<string, { label: string; bg: string; color: string; border: string; title: string }> = {
+  clique:      { label: 'Mail cliqué',    bg: '#dcfce7', color: '#15803d', border: '#86efac', title: 'La patiente a cliqué un lien du mail' },
+  ouvert:      { label: 'Mail ouvert',    bg: '#ecfdf5', color: '#047857', border: '#a7f3d0', title: 'Le mail a été ouvert, sans clic pour l’instant' },
+  livre:       { label: 'Mail livré',     bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe', title: 'Mail arrivé dans la boîte, pas encore ouvert' },
+  envoye:      { label: 'Mail envoyé',    bg: '#f1f5f9', color: '#475569', border: '#cbd5e1', title: 'Brevo a accepté l’envoi — en attente du rapport' },
+  echec:       { label: 'Mail non livré', bg: '#fef2f2', color: '#b91c1c', border: '#fecaca', title: 'Le mail n’est pas arrivé (bounce, blocage ou spam)' },
+  echec_envoi: { label: 'Mail non livré', bg: '#fef2f2', color: '#b91c1c', border: '#fecaca', title: 'Brevo a refusé l’envoi — vérifier l’adresse et l’expéditeur' },
+};
+
+function MailChip({ r }: { r: Relance }) {
+  if (!r.email) return null;
+  const s = String(r.email_statut || '').toLowerCase();
+  const cfg = MAIL_ETAT_CONFIG[s] ?? { label: 'Mail en attente', bg: '#f8fafc', color: '#64748b', border: '#e2e8f0', title: 'Adresse connue, mail pas encore envoyé (part au prochain appel)' };
+  // Brevo n'expose pas le lien clique sur ce compte (champ `link` toujours vide) :
+  // on affiche donc le fait qu'il y a eu un clic, sans chercher lequel.
+  const quand = r.email_clic_le || r.email_ouvert_le || r.email_le;
+  return (
+    <span
+      title={`${cfg.title} · ${r.email}${quand ? ` — ${formatDateTime(quand)}` : ''}`}
+      style={{ display: 'inline-block', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 8, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, whiteSpace: 'nowrap' }}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+/** Le lien ordonnance n'est jamais arrivé : échec Brevo, ou envoi jamais enregistré. */
+function smsNonRecu(r: Relance): boolean {
+  const e = smsEtat(r);
+  return e === 'echec' || e === 'aucun';
+}
+
+/** Aucun contact effectif : ni joint à l'oral, ni SMS livré. */
+function isInjoignable(r: Relance): boolean {
+  if (r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') return false; // jointe à l'oral
+  if (r.statut === 'À appeler') return false;                                       // pas encore tentée
+  return smsEtat(r) !== 'livre';                                                    // Répondeur / Non répondu
+}
+
+/** Statuts considérés comme traités : plus rien à appeler. */
+const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur'];
+
+/**
+ * Filtres rapides de la liste. Ils remplacent les anciennes cartes KPI, l'onglet
+ * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
+ * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
+ */
+type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'tout';
+
+const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
+  { id: 'a_traiter',     label: 'À traiter',     match: r => !TRAITES.includes(r.statut),  title: 'Tout ce qui reste à appeler' },
+  { id: 'a_appeler',     label: 'À appeler',     match: r => r.statut === 'À appeler',     title: 'Jamais encore appelées' },
+  { id: 'messagerie',    label: 'Messagerie',    match: r => r.statut === 'Répondeur',     title: 'Message vocal laissé — le SMS est le seul vrai point de contact' },
+  { id: 'sms_non_livre', label: 'SMS non reçu',  match: smsNonRecu,        alerte: true,   title: 'Le lien ordonnance n’est jamais arrivé' },
+  { id: 'injoignables',  label: 'Injoignables',  match: isInjoignable,     alerte: true,   title: 'Ni joint à l’oral, ni SMS livré : aucun contact effectif' },
+  { id: 'echec_appel',   label: 'En échec',      match: r => !!r.echec_motif, alerte: true, title: 'L’appel n’a pas pu être lancé' },
+  { id: 'deja_envoyee',  label: 'Déjà envoyée',  match: r => !!r.ordonnance_deja_envoyee, alerte: true, title: 'La patiente affirme avoir déjà transmis son ordonnance — à vérifier' },
+  { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
+];
 
 function FixeBadge() {
   return <span title="Numéro fixe : ne peut pas recevoir de SMS" style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 8, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1', whiteSpace: 'nowrap' }}>📞 Fixe · pas de SMS</span>;
@@ -194,17 +320,18 @@ async function fetchCallHistory(token: string, telephone: string): Promise<Relan
 }
 
 // ─── Import / Manual Modal ────────────────────────────────────────────────────
-interface EditableRow { _id: number; nom: string; prenom: string; telephone: string; date_echeance: string; }
+interface EditableRow { _id: number; nom: string; prenom: string; telephone: string; email: string; date_echeance: string; }
 let _rowSeq = 0;
-function newRow(p?: Partial<EditableRow>): EditableRow { return { _id: ++_rowSeq, nom: '', prenom: '', telephone: '', date_echeance: '', ...p }; }
+function newRow(p?: Partial<EditableRow>): EditableRow { return { _id: ++_rowSeq, nom: '', prenom: '', telephone: '', email: '', date_echeance: '', ...p }; }
 function parseToEditable(rawRows: object[]): EditableRow[] {
   return rawRows.map(r => {
     const row = r as Record<string, unknown>;
     const nom = String(row.nom ?? row.Nom ?? row['Nom de famille'] ?? row.NAME ?? row.name ?? '');
     const prenom = String(row.prenom ?? row.Prenom ?? row.Prénom ?? row['Prénom'] ?? row.firstname ?? row.firstName ?? '');
     const telephone = normalizePhoneFr(String(row.telephone ?? row.tel ?? row.phone ?? row.Telephone ?? row['Téléphone'] ?? row.numero ?? row.Numero ?? ''));
+    const email = normalizeEmail(String(row.email ?? row.Email ?? row.EMAIL ?? row.mail ?? row.Mail ?? row['E-mail'] ?? row['Adresse email'] ?? ''));
     const date_echeance = parseFrDate(row.date_echeance ?? row.dateEcheance ?? row['Date échéance'] ?? row["Date d'échéance"] ?? row['date echeance'] ?? row.date ?? '');
-    return newRow({ nom, prenom, telephone, date_echeance });
+    return newRow({ nom, prenom, telephone, email, date_echeance });
   });
 }
 
@@ -233,6 +360,15 @@ function parseOrthop(aoa: unknown[][]): EditableRow[] | null {
       for (let c = 0; c < row.length; c++) { if (c !== benefCol && c !== dateCol && phoneLike(row[c])) { phoneCol = c; break outer; } }
     }
   }
+  // Colonne email : en-tête explicite, sinon première colonne contenant un « @ ».
+  const mailLike = (v: unknown) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v).trim());
+  let emailCol = hdr.findIndex(c => /e[-\s]?mail|courriel|adresse\s*mail/i.test(c));
+  if (emailCol < 0) {
+    outerMail: for (let i = headerIdx + 1; i < Math.min(aoa.length, headerIdx + 6); i++) {
+      const row = aoa[i]; if (!Array.isArray(row)) continue;
+      for (let c = 0; c < row.length; c++) { if (mailLike(row[c])) { emailCol = c; break outerMail; } }
+    }
+  }
   const out: EditableRow[] = [];
   for (let i = headerIdx + 1; i < aoa.length; i++) {
     const row = aoa[i]; if (!Array.isArray(row)) continue;
@@ -249,6 +385,7 @@ function parseOrthop(aoa: unknown[][]): EditableRow[] | null {
       nom: titleCaseName(nom),
       prenom: titleCaseName(prenom),
       telephone: normalizePhoneFr(phoneRaw),
+      email: emailCol >= 0 ? normalizeEmail(String(row[emailCol] ?? '')) : '',
       date_echeance: parseFrDate(row[dateCol]),
     }));
   }
@@ -269,9 +406,17 @@ function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode:
     reader.onload = e => {
       try {
         const wb = read(e.target?.result as ArrayBuffer, { type: 'array', cellDates: true });
-        const ws = wb.Sheets[wb.SheetNames[0]];
-        const aoa = utils.sheet_to_json(ws, { header: 1, defval: '' }) as unknown[][];
-        const parsed = parseOrthop(aoa) ?? parseToEditable(utils.sheet_to_json(ws, { defval: '' }) as object[]);
+        // Toutes les feuilles sont lues et concaténées : les exports ORTHOP arrivent souvent
+        // avec une feuille par jour (« Liste 21.08 », « Liste 22.08 »…).
+        const parsed: EditableRow[] = [];
+        for (const sheetName of wb.SheetNames) {
+          const ws = wb.Sheets[sheetName];
+          if (!ws) continue;
+          const aoa = utils.sheet_to_json(ws, { header: 1, defval: '' }) as unknown[][];
+          const sheetRows = parseOrthop(aoa) ?? parseToEditable(utils.sheet_to_json(ws, { defval: '' }) as object[]);
+          // Ignore les lignes vides des feuilles annexes (notes, totaux, onglets de garde)
+          parsed.push(...sheetRows.filter(r => r.nom.trim() || r.prenom.trim() || r.telephone.trim()));
+        }
         setRows(parsed.length ? parsed : [newRow()]);
         setFilename(f.name);
         setStep(2);
@@ -309,7 +454,7 @@ function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode:
             <div style={{ padding: '10px 14px', background: '#f8fafc', borderRadius: 8, border: '1px solid var(--border)', marginBottom: 16 }}>
               <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', margin: '0 0 6px' }}>Colonnes attendues :</p>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {['nom', 'prenom', 'telephone', 'date_echeance'].map(c => <code key={c} style={{ fontSize: 11, background: 'var(--blue-light)', color: 'var(--blue)', padding: '2px 6px', borderRadius: 4 }}>{c}</code>)}
+                {['nom', 'prenom', 'telephone', 'email', 'date_echeance'].map(c => <code key={c} style={{ fontSize: 11, background: 'var(--blue-light)', color: 'var(--blue)', padding: '2px 6px', borderRadius: 4 }}>{c}</code>)}
               </div>
               <p style={{ fontSize: 11, color: 'var(--muted)', margin: '8px 0 0' }}>✨ Export ORTHOP « Demande de renouvellement » (<code style={{ fontSize: 10 }}>Bénéficiaire</code> / <code style={{ fontSize: 10 }}>Applicable du</code> / <code style={{ fontSize: 10 }}>M.</code>) détecté automatiquement.</p>
             </div>
@@ -335,13 +480,14 @@ function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode:
             </div>
             <div style={{ overflowY: 'auto', maxHeight: '48vh', marginBottom: 14 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr style={{ background: '#f8fafc' }}>{['#', 'Nom', 'Prénom', 'Téléphone *', 'Date échéance', ''].map(h => <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 11, color: 'var(--text)', letterSpacing: '.3px', textTransform: 'uppercase', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
+                <thead><tr style={{ background: '#f8fafc' }}>{['#', 'Nom', 'Prénom', 'Téléphone *', 'Email', 'Date échéance', ''].map(h => <th key={h} style={{ padding: '8px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 11, color: 'var(--text)', letterSpacing: '.3px', textTransform: 'uppercase', borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap' }}>{h}</th>)}</tr></thead>
                 <tbody>{rows.map((r, i) => (
                   <tr key={r._id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                     <td style={{ padding: '5px 10px', color: 'var(--muted)', fontSize: 11, width: 28 }}>{i + 1}</td>
                     <td style={{ padding: '4px 6px' }}><input style={cellInput} value={r.nom} onChange={e => upd(r._id, 'nom', e.target.value)} placeholder="Nom de famille" /></td>
                     <td style={{ padding: '4px 6px' }}><input style={cellInput} value={r.prenom} onChange={e => upd(r._id, 'prenom', e.target.value)} placeholder="Prénom" /></td>
                     <td style={{ padding: '4px 6px' }}><input style={{ ...cellInput, borderColor: !r.telephone.trim() ? '#fca5a5' : 'var(--border)' }} value={r.telephone} onChange={e => upd(r._id, 'telephone', e.target.value)} placeholder="+33612345678" /></td>
+                    <td style={{ padding: '4px 6px' }}><input style={cellInput} value={r.email} onChange={e => upd(r._id, 'email', e.target.value)} type="email" placeholder="prenom.nom@mail.com" /></td>
                     <td style={{ padding: '4px 6px' }}><input style={cellInput} value={r.date_echeance} onChange={e => upd(r._id, 'date_echeance', e.target.value)} type="date" /></td>
                     <td style={{ padding: '4px 6px', width: 32 }}><button onClick={() => setRows(p => p.filter(x => x._id !== r._id))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', display: 'flex', padding: 4 }}><X size={14} /></button></td>
                   </tr>
@@ -949,346 +1095,6 @@ function CampagnesView({ batches, relances, token, onRelanceUpdate, onRelanceDel
   );
 }
 
-// ─── Numéros View ─────────────────────────────────────────────────────────────
-interface PhoneGroup {
-  telephone: string;
-  nom: string;
-  relances: Relance[];
-  nb_campagnes: number;
-  nb_tentatives: number;
-  dernier_appel: string | null;
-  statut: Relance['statut'];
-}
-
-function NumérosView({ relances, token }: { relances: Relance[]; token: string }) {
-  const [search, setSearch] = React.useState('');
-  const [historyPhone, setHistoryPhone] = React.useState<string | null>(null);
-
-  const groups = React.useMemo<PhoneGroup[]>(() => {
-    const map: Record<string, PhoneGroup> = {};
-    relances.forEach(r => {
-      const tel = r.telephone || '';
-      if (!tel) return;
-      if (!map[tel]) {
-        map[tel] = { telephone: tel, nom: r.nom || '', relances: [], nb_campagnes: 0, nb_tentatives: 0, dernier_appel: null, statut: r.statut };
-      }
-      const g = map[tel];
-      g.relances.push(r);
-      g.nb_tentatives += r.nb_tentatives ?? 0;
-      if (r.nom && !g.nom) g.nom = r.nom;
-      if (r.dernier_appel && (!g.dernier_appel || r.dernier_appel > g.dernier_appel)) {
-        g.dernier_appel = r.dernier_appel;
-        g.statut = r.statut;
-      }
-      const batchIds = new Set(g.relances.map(x => x.batch_id).filter(Boolean));
-      g.nb_campagnes = batchIds.size;
-    });
-    return Object.values(map).sort((a, b) => {
-      if (!a.dernier_appel && !b.dernier_appel) return (a.nom || a.telephone).localeCompare(b.nom || b.telephone);
-      if (!a.dernier_appel) return 1;
-      if (!b.dernier_appel) return -1;
-      return b.dernier_appel.localeCompare(a.dernier_appel);
-    });
-  }, [relances]);
-
-  const filtered = groups.filter(g => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return g.telephone.replace(/\s/g, '').includes(q.replace(/\s/g, '')) || g.nom.toLowerCase().includes(q);
-  });
-
-  return (
-    <div className="animate-fade-up">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-        <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>
-          {groups.length} numéro{groups.length !== 1 ? 's' : ''} unique{groups.length !== 1 ? 's' : ''} · {relances.filter(r => r.telephone).length} relance{relances.filter(r => r.telephone).length !== 1 ? 's' : ''} au total
-        </p>
-        <div style={{ position: 'relative' }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Filtrer par nom / numéro…" style={{ padding: '6px 10px 6px 30px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13, color: 'var(--text)', width: 230, outline: 'none' }} />
-          <span style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', fontSize: 13, pointerEvents: 'none' }}>🔍</span>
-        </div>
-      </div>
-      {filtered.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--muted)' }}>
-          <Phone size={32} strokeWidth={1.5} style={{ opacity: .3, marginBottom: 12 }} />
-          <p style={{ fontSize: 13, fontWeight: 600 }}>Aucun numéro</p>
-          <p style={{ fontSize: 12, marginTop: 4 }}>{search ? 'Aucun résultat pour cette recherche.' : 'Importez des relances pour voir les numéros ici.'}</p>
-        </div>
-      ) : (
-        <div style={{ background: 'white', borderRadius: 14, border: '1px solid var(--border)', overflow: 'hidden', boxShadow: 'var(--shadow-sm)' }}>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: '#f8fafc', borderBottom: '2px solid var(--border)' }}>
-                  {['Téléphone', 'Nom', 'Campagnes', 'Appels', 'Statut récent', 'Dernier appel', ''].map((h, i) => (
-                    <th key={i} style={{ padding: '10px 12px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 11, color: 'var(--text)', letterSpacing: '.4px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((g, i) => {
-                  const cfg = STATUT_CONFIG[g.statut] || { color: '#6b7280', bg: '#f3f4f6', hex: '#e2e8f0', stripe: '#e2e8f0' };
-                  return (
-                    <tr key={g.telephone}
-                      style={{ borderBottom: i < filtered.length - 1 ? '1px solid #f1f5f9' : 'none', borderLeft: `3px solid ${STATUT_CONFIG[g.statut]?.hex || '#e2e8f0'}` }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-                      <td style={{ padding: '9px 12px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: 12.5, color: 'var(--text)', fontWeight: 600 }}>{g.telephone}</span>
-                      </td>
-                      <td style={{ padding: '9px 12px', fontWeight: 600, color: 'var(--text)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.nom || '—'}</td>
-                      <td style={{ padding: '9px 12px', textAlign: 'center' }}>
-                        {g.nb_campagnes > 0 ? (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: '#6366f1', background: '#eef2ff', padding: '2px 8px', borderRadius: 10 }}>
-                            <Layers size={11} /> {g.nb_campagnes}
-                          </span>
-                        ) : <span style={{ color: 'var(--muted)' }}>—</span>}
-                      </td>
-                      <td style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 700, fontSize: 13, color: g.nb_tentatives > 0 ? 'var(--blue)' : 'var(--muted)', fontFamily: 'Lexend,sans-serif' }}>{g.nb_tentatives}</td>
-                      <td style={{ padding: '9px 12px' }}>
-                        <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, background: cfg.bg, color: cfg.color }}>{g.statut}</span>
-                      </td>
-                      <td style={{ padding: '9px 12px', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(g.dernier_appel)}</td>
-                      <td style={{ padding: '9px 10px' }}>
-                        <button onClick={() => setHistoryPhone(g.telephone)} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '4px 9px', background: '#eef2ff', color: '#4f46e5', border: '1px solid #c7d2fe', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer' }}>
-                          <History size={11} /> Historique
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-      {historyPhone && <HistoryPanel telephone={historyPhone} token={token} onClose={() => setHistoryPhone(null)} />}
-    </div>
-  );
-}
-
-// ─── Suivi (appels sortants à suivre) ──────────────────────────────────────────
-const CAMP_NONE = 'Sans campagne';
-
-const suiviIconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border)', background: 'white', color: 'var(--muted)', cursor: 'pointer' };
-
-/** Une relance doit être suivie si le SMS a échoué, si sentiment négatif, ou si non répondu / répondeur. */
-export function needsFollowUp(r: Relance): boolean {
-  return !!r.echec_motif || r.sms_echec === true || r.sentiment === 'negatif' || r.statut === 'Non répondu' || r.ordonnance_deja_envoyee === true;
-}
-
-function SuiviView({ relances, callingId, onCall, onHistory, onTranscript, onRecallAll, onMarkVerified }: {
-  relances: Relance[];
-  callingId: number | null;
-  onCall: (r: Relance) => void;
-  onHistory: (phone: string) => void;
-  onTranscript: (r: Relance) => void;
-  onRecallAll: (list: Relance[]) => void;
-  onMarkVerified: (r: Relance) => void;
-}) {
-  // Agrégats par campagne (batch_label) — triés : le plus « à suivre » en premier.
-  const camp = (r: Relance) => r.batch_label || CAMP_NONE;
-  const campaigns = [...new Set(relances.map(camp))].map(name => {
-    const rs = relances.filter(r => camp(r) === name);
-    return {
-      name,
-      total:      rs.length,
-      repondu:    rs.filter(r => r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert').length,
-      aAppeler:   rs.filter(r => r.statut === 'À appeler').length,
-      nonRepondu: rs.filter(r => r.statut === 'Non répondu').length,
-      repondeur:  rs.filter(r => r.statut === 'Répondeur').length,
-      smsEchec:   rs.filter(r => r.sms_echec === true).length,
-      negatif:    rs.filter(r => r.sentiment === 'negatif').length,
-      errs:       rs.filter(r => r.echec_motif).length,
-    };
-  }).sort((a, b) => (b.errs + b.smsEchec + b.negatif + b.nonRepondu + b.repondeur) - (a.errs + a.smsEchec + a.negatif + a.nonRepondu + a.repondeur));
-
-  // Dernière campagne (import le plus récent) + ses erreurs de LANCEMENT — pour relancer
-  let lastCampName = '', lastImp = '';
-  for (const r of relances) { const imp = r.importe_le || ''; if (imp > lastImp) { lastImp = imp; lastCampName = r.batch_label || CAMP_NONE; } }
-  const launchErrors = relances.filter(r => (r.batch_label || CAMP_NONE) === lastCampName && r.echec_motif === 'Échec déclenchement');
-  const ordoAVerifier = relances.filter(r => r.ordonnance_deja_envoyee === true);
-
-  // ── Vue d'ensemble : chiffres de ce qui s'est passé ──────────────────────────
-  const total = relances.length;
-  const n = (f: (r: Relance) => boolean) => relances.filter(f).length;
-  const cnt = {
-    aAppeler:   n(r => r.statut === 'À appeler'),
-    nonRepondu: n(r => r.statut === 'Non répondu'),
-    repondeur:  n(r => r.statut === 'Répondeur'),
-    repSms:     n(r => r.statut === 'Répondu SMS'),
-    repTransf:  n(r => r.statut === 'Répondu transfert'),
-  };
-  const resolus = cnt.repSms + cnt.repTransf;
-  const appeles = n(r => (r.nb_tentatives || 0) > 0);
-  const tauxResolution = total ? Math.round((resolus / total) * 100) : 0;
-
-  const bigKpis = [
-    { label: 'Relances',  value: total,        sub: 'au total',                              color: '#0f172a', bg: '#f1f5f9', icon: <Layers size={18} /> },
-    { label: 'Appelés',   value: appeles,      sub: `${total - appeles} pas encore appelés`, color: '#1d4ed8', bg: '#eff6ff', icon: <PhoneCall size={18} /> },
-    { label: 'Résolus',   value: resolus,      sub: `${tauxResolution}% de résolution`,      color: '#065f46', bg: '#ecfdf5', icon: <CheckCircle size={18} /> },
-    { label: 'À appeler', value: cnt.aAppeler, sub: 'en attente',                            color: '#92400e', bg: '#fffbeb', icon: <Clock size={18} /> },
-  ];
-  const outcome = [
-    { label: 'Répondu SMS',       value: cnt.repSms,     hex: STATUT_CONFIG['Répondu SMS'].hex,       color: STATUT_CONFIG['Répondu SMS'].color },
-    { label: 'Répondu transfert', value: cnt.repTransf,  hex: STATUT_CONFIG['Répondu transfert'].hex, color: STATUT_CONFIG['Répondu transfert'].color },
-    { label: 'Répondeur',         value: cnt.repondeur,  hex: STATUT_CONFIG['Répondeur'].hex,         color: STATUT_CONFIG['Répondeur'].color },
-    { label: 'Non répondu',       value: cnt.nonRepondu, hex: STATUT_CONFIG['Non répondu'].hex,       color: STATUT_CONFIG['Non répondu'].color },
-    { label: 'À appeler',         value: cnt.aAppeler,   hex: STATUT_CONFIG['À appeler'].hex,         color: STATUT_CONFIG['À appeler'].color },
-  ];
-  const attention = [
-    { label: 'En échec',       value: n(r => !!r.echec_motif),           color: '#b91c1c', bg: '#fef2f2', icon: <AlertCircle size={15} /> },
-    { label: 'SMS non livrés', value: n(r => r.sms_echec === true),      color: '#b91c1c', bg: '#fef2f2', icon: <MessageSquare size={15} /> },
-    { label: 'Mécontents',     value: n(r => r.sentiment === 'negatif'), color: '#b91c1c', bg: '#fef2f2', icon: <PhoneCall size={15} /> },
-    { label: 'Non répondus',   value: cnt.nonRepondu,                    color: '#92400e', bg: '#fffbeb', icon: <PhoneOff size={15} /> },
-    { label: 'Déjà envoyée (à vérifier)', value: n(r => r.ordonnance_deja_envoyee === true), color: '#b45309', bg: '#fff7ed', icon: <FileText size={15} /> },
-  ];
-
-  return (
-    <div className="animate-fade-in">
-      {/* Vue d'ensemble — grands chiffres */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-        {bigKpis.map(c => (
-          <div key={c.label} style={{ background: 'white', borderRadius: 14, padding: '16px 18px', border: '1px solid #e8edf2', boxShadow: '0 1px 4px rgba(0,0,0,.05)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px' }}>{c.label}</span>
-              <div style={{ width: 32, height: 32, borderRadius: 9, background: c.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.color, flexShrink: 0 }}>{c.icon}</div>
-            </div>
-            <div style={{ fontSize: 38, fontWeight: 800, color: c.color, fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{c.value}</div>
-            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 5 }}>{c.sub}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Résultats des appels — barre + légende chiffrée */}
-      <div style={{ background: 'white', borderRadius: 14, padding: '16px 18px', border: '1px solid #e8edf2', boxShadow: '0 1px 4px rgba(0,0,0,.05)', marginBottom: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', marginBottom: 12 }}>Résultats des appels</div>
-        {total === 0 ? (
-          <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>Aucune relance pour l'instant.</div>
-        ) : (
-          <>
-            <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', background: '#eef2f6', marginBottom: 14 }}>
-              {outcome.filter(o => o.value > 0).map(o => (
-                <div key={o.label} title={`${o.label} : ${o.value}`} style={{ width: `${(o.value / total) * 100}%`, background: o.hex }} />
-              ))}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
-              {outcome.map(o => (
-                <div key={o.label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 3, background: o.hex, flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, color: 'var(--muted)', flex: 1 }}>{o.label}</span>
-                  <span style={{ fontSize: 15, fontWeight: 800, color: o.color, fontFamily: 'Lexend,sans-serif' }}>{o.value}</span>
-                  <span style={{ fontSize: 11, color: '#94a3b8', minWidth: 34, textAlign: 'right' }}>{Math.round((o.value / total) * 100)}%</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Points d'attention */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10, marginBottom: 20 }}>
-        {attention.map(a => (
-          <div key={a.label} style={{ background: a.value > 0 ? a.bg : 'white', borderRadius: 12, padding: '10px 14px', border: `1px solid ${a.value > 0 ? a.color + '33' : '#e8edf2'}`, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: 8, background: a.value > 0 ? 'white' : '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center', color: a.value > 0 ? a.color : '#cbd5e1', flexShrink: 0 }}>{a.icon}</div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 20, fontWeight: 800, color: a.value > 0 ? a.color : '#cbd5e1', fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{a.value}</div>
-              <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.label}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Erreurs de LANCEMENT de la dernière campagne — pour relancer */}
-      {launchErrors.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 13, border: '1px solid #fecaca', overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,.05)', marginBottom: 20 }}>
-          <div style={{ padding: '12px 18px', borderBottom: '1px solid #fee2e2', background: '#fef2f2', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#b91c1c', fontFamily: 'Lexend,sans-serif', display: 'flex', alignItems: 'center', gap: 6 }}><AlertCircle size={15} /> Erreurs de lancement — {lastCampName} ({launchErrors.length})</span>
-            <button onClick={() => onRecallAll(launchErrors)} disabled={callingId !== null} style={{ fontSize: 12, fontWeight: 700, color: 'white', background: callingId !== null ? '#a5b4fc' : '#4338ca', border: 'none', borderRadius: 7, padding: '5px 12px', cursor: callingId !== null ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              {callingId !== null ? <RefreshCw size={13} className="animate-spin" /> : <Phone size={13} />} Tout relancer ({launchErrors.length})
-            </button>
-          </div>
-          {launchErrors.map(r => (
-            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid #fef2f2' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{[r.prenom, r.nom].filter(Boolean).join(' ') || '—'} · {r.telephone || '—'} {isFixe(r.telephone) && <FixeBadge />}</div>
-                <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.nb_tentatives} tentative{r.nb_tentatives > 1 ? 's' : ''} · dernier échec {formatDateTime(r.dernier_echec || r.dernier_appel)}</div>
-              </div>
-              {r.transcript && <button onClick={() => onTranscript(r)} title="Transcript" style={suiviIconBtn}><MessageSquare size={15} /></button>}
-              {r.telephone && <button onClick={() => onHistory(r.telephone!)} title="Historique" style={suiviIconBtn}><History size={15} /></button>}
-              {r.telephone && (
-                <button onClick={() => onCall(r)} disabled={callingId === r.id} title="Relancer" style={{ ...suiviIconBtn, background: '#4338ca', color: 'white', borderColor: '#4338ca' }}>
-                  {callingId === r.id ? <RefreshCw size={15} className="animate-spin" /> : <Phone size={15} />}
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* À vérifier — a dit avoir déjà envoyé son ordonnance */}
-      {ordoAVerifier.length > 0 && (
-        <div style={{ background: 'white', borderRadius: 13, border: '1px solid #fed7aa', overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,.05)', marginBottom: 20 }}>
-          <div style={{ padding: '12px 18px', borderBottom: '1px solid #ffedd5', background: '#fff7ed', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <FileText size={15} style={{ color: '#b45309' }} />
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#b45309', fontFamily: 'Lexend,sans-serif' }}>À vérifier — a dit avoir déjà envoyé son ordonnance ({ordoAVerifier.length})</span>
-          </div>
-          {ordoAVerifier.map(r => (
-            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: '1px solid #fff7ed' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>{[r.prenom, r.nom].filter(Boolean).join(' ') || '—'} · {r.telephone || '—'} {isFixe(r.telephone) && <FixeBadge />}</div>
-                <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>{r.batch_label || CAMP_NONE} · dernier appel {formatDateTime(r.dernier_appel)}</div>
-              </div>
-              {r.transcript && <button onClick={() => onTranscript(r)} title="Relire le transcript" style={suiviIconBtn}><MessageSquare size={15} /></button>}
-              {r.telephone && <button onClick={() => onHistory(r.telephone!)} title="Historique du numéro" style={suiviIconBtn}><History size={15} /></button>}
-              <button onClick={() => onMarkVerified(r)} title="Marquer comme vérifié (retire de la liste)" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: '#065f46', background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 7, padding: '6px 11px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-                <CheckCircle size={14} /> Vérifié
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Suivi par campagne */}
-      {campaigns.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', marginBottom: 10 }}>Suivi par campagne</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
-            {campaigns.map(c => {
-              const pct = c.total ? Math.round((c.repondu / c.total) * 100) : 0;
-              const chips = ([
-                c.errs       ? { label: `${c.errs} en échec`,                                    color: '#b91c1c', bg: '#fef2f2' } : null,
-                c.smsEchec   ? { label: `${c.smsEchec} SMS non livré${c.smsEchec > 1 ? 's' : ''}`, color: '#b91c1c', bg: '#fef2f2' } : null,
-                c.negatif    ? { label: `${c.negatif} mécontent${c.negatif > 1 ? 's' : ''}`,     color: '#b91c1c', bg: '#fef2f2' } : null,
-                c.nonRepondu ? { label: `${c.nonRepondu} non répondu${c.nonRepondu > 1 ? 's' : ''}`, color: '#92400e', bg: '#fffbeb' } : null,
-                c.repondeur  ? { label: `${c.repondeur} répondeur${c.repondeur > 1 ? 's' : ''}`,  color: '#5b21b6', bg: '#f5f3ff' } : null,
-                c.aAppeler   ? { label: `${c.aAppeler} à appeler`,                                color: '#1d4ed8', bg: '#eff6ff' } : null,
-              ].filter(Boolean)) as { label: string; color: string; bg: string }[];
-              return (
-                <div key={c.name} style={{ background: 'white', borderRadius: 13, padding: '14px 16px', border: '1px solid #e8edf2', boxShadow: '0 1px 4px rgba(0,0,0,.05)' }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', flexShrink: 0 }}>{c.repondu}/{c.total} traités · {pct}%</span>
-                  </div>
-                  <div style={{ height: 6, borderRadius: 3, background: '#eef2f6', overflow: 'hidden', marginBottom: 10 }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: '#10b981' }} />
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                    {chips.length === 0
-                      ? <span style={{ fontSize: 11, color: '#15803d', fontWeight: 600 }}>✓ Rien à suivre</span>
-                      : chips.map((ch, i) => <span key={i} style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 8, background: ch.bg, color: ch.color, whiteSpace: 'nowrap' }}>{ch.label}</span>)}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-    </div>
-  );
-}
-
 // ─── Main View ────────────────────────────────────────────────────────────────
 export function RecouvrementView({ user }: { user: AuthUser }) {
   const [relances, setRelances]             = useState<Relance[]>([]);
@@ -1296,12 +1102,12 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [batches, setBatches]               = useState<BatchGroup[]>([]);
   const [loading, setLoading]               = useState(true);
   const [error, setError]                   = useState('');
-  const [activeTab, setActiveTab]           = useState<'relances' | 'suivi' | 'campagnes' | 'numeros'>('relances');
+  const [activeTab, setActiveTab]           = useState<'relances' | 'campagnes'>('relances');
   const [showImport, setShowImport]         = useState(false);
   const [showManual, setShowManual]         = useState(false);
   const [editTarget, setEditTarget]         = useState<Relance | null>(null);
   const [filterStatut, setFilterStatut]     = useState('');
-  const [filterToday, setFilterToday]       = useState(false);
+  const [vue, setVue]                       = useState<VueFiltre>('a_traiter');
   const [search, setSearch]                 = useState('');
   const [sortByPriority, setSortByPriority] = useState(false);
   const [successMsg, setSuccessMsg]         = useState('');
@@ -1331,21 +1137,11 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   useEffect(() => { load(); }, [load]);
 
   const today = new Date().toDateString();
-  // Statuts « traités » masqués par défaut dans la liste Relances : le patient a été
-  // contacté (SMS envoyé) ou transféré → plus rien à appeler. Répondeur inclus (message
-  // laissé + SMS envoyé). Ils restent visibles dans l'onglet Campagnes et via le filtre statut.
-  const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur'];
+  const vueMatch = (VUES.find(v => v.id === vue) ?? VUES[0]).match;
   const filtered = relances
-    // Par défaut on masque les relances déjà traitées :
-    // la liste ne montre que ce qui reste à faire.
-    // Pour revoir les traitées (dont Répondeur), sélectionner leur statut dans le menu déroulant.
-    .filter(r => filterStatut ? r.statut === filterStatut : !TRAITES.includes(r.statut))
-    .filter(r => {
-      if (!filterToday) return true;
-      if (r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') return false;
-      if (!r.dernier_appel) return true;
-      return new Date(r.dernier_appel).toDateString() !== today;
-    })
+    // La barre de filtres rapides pilote la liste ; le menu « Statut » affine en plus (ET).
+    .filter(vueMatch)
+    .filter(r => !filterStatut || r.statut === filterStatut)
     .filter(r => {
       if (!search) return true;
       const q = search.toLowerCase();
@@ -1358,6 +1154,22 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
 
   const repondus = stats.repondu_sms + stats.repondu_transfert;
   const tauxRappel = stats.total > 0 ? Math.round((repondus / stats.total) * 100) : 0;
+
+  // Activité du jour — alimente le bandeau « Aujourd'hui » (piloter une campagne en cours).
+  const duJour = relances.filter(r => r.dernier_appel && new Date(r.dernier_appel).toDateString() === today);
+  const jour = {
+    appeles:    duJour.length,
+    repondu:    duJour.filter(r => r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert').length,
+    messagerie: duJour.filter(r => r.statut === 'Répondeur').length,
+    nonRepondu: duJour.filter(r => r.statut === 'Non répondu').length,
+    smsLivres:  duJour.filter(r => smsEtat(r) === 'livre').length,
+    smsRates:   duJour.filter(smsNonRecu).length,
+  };
+  // Clics sur les liens du mail — pas limité au jour : le clic arrive souvent plus tard que l'appel.
+  const mailsCliques = relances.filter(r => r.email_statut === 'clique').length;
+  // Bandeaux d'action : n'apparaissent que s'il y a réellement quelque chose à faire.
+  const aVerifier = relances.filter(r => r.ordonnance_deja_envoyee);
+  const enEchec   = relances.filter(r => r.echec_motif);
   const batchCandidates = filtered.filter(r => selected.has(r.id) && r.telephone && r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert');
 
   function toggleSelect(id: number) { setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
@@ -1505,9 +1317,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 12, padding: 4, gap: 2 }}>
           {([
             { id: 'relances' as const, label: 'Relances', count: relances.length },
-            { id: 'suivi' as const, label: 'Suivi', count: relances.filter(needsFollowUp).length, icon: <TrendingUp size={13} /> },
             { id: 'campagnes' as const, label: 'Campagnes', count: batches.length, icon: <Layers size={13} /> },
-            { id: 'numeros' as const, label: 'Numéros', count: [...new Set(relances.map(r => r.telephone).filter(Boolean))].length, icon: <Phone size={13} /> },
           ]).map(tab => {
             const active = activeTab === tab.id;
             return (
@@ -1529,8 +1339,8 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 {tab.count > 0 && (
                   <span style={{
                     fontSize: 10.5, fontWeight: 700, fontFamily: 'inherit',
-                    background: tab.id === 'suivi' && tab.count > 0 ? '#fee2e2' : active ? '#ede9fe' : '#e2e8f0',
-                    color: tab.id === 'suivi' && tab.count > 0 ? '#b91c1c' : active ? '#4338ca' : '#64748b',
+                    background: active ? '#ede9fe' : '#e2e8f0',
+                    color: active ? '#4338ca' : '#64748b',
                     padding: '1px 7px', borderRadius: 10,
                   }}>
                     {tab.count}
@@ -1553,49 +1363,79 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         />
       )}
 
-      {/* ── Numéros tab ─────────────────────────────────────────────────────── */}
-      {activeTab === 'numeros' && (
-        <NumérosView relances={relances} token={user.token} />
-      )}
-
-      {/* ── À suivre tab ────────────────────────────────────────────────────── */}
-      {activeTab === 'suivi' && (
-        <SuiviView
-          relances={relances}
-          callingId={callingId}
-          onCall={handleCall}
-          onHistory={setHistoryPhone}
-          onTranscript={setTranscriptTarget}
-          onRecallAll={recallAll}
-          onMarkVerified={markOrdoVerified}
-        />
-      )}
-
       {/* ── Relances tab ────────────────────────────────────────────────────── */}
       {activeTab === 'relances' && (
         <>
-          {/* ── KPI Strip ──────────────────────────────────────────────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
+          {/* ── Aujourd'hui : une seule ligne pour piloter la campagne en cours ── */}
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 12, boxShadow: 'var(--shadow-sm)' }}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif', marginRight: 18 }}>Aujourd'hui</span>
             {[
-              { label: 'À appeler', value: stats.a_appeler, sub: 'Pas encore contactés', color: '#1d4ed8', bg: '#eff6ff', icon: <Phone size={16} /> },
-              { label: 'Répondus', value: stats.repondu_sms + stats.repondu_transfert, sub: `${tauxRappel}% de taux`, color: '#065f46', bg: '#ecfdf5', icon: <CheckCircle size={16} /> },
-              { label: 'Non répondus', value: stats.non_repondu, sub: 'À relancer', color: '#92400e', bg: '#fffbeb', icon: <PhoneOff size={16} /> },
-              { label: 'Répondeurs', value: stats.repondeur, sub: 'SMS envoyé', color: '#5b21b6', bg: '#f5f3ff', icon: <Voicemail size={16} /> },
-            ].map(c => (
-              <div key={c.label} style={{
-                background: 'white', borderRadius: 13, padding: '14px 18px',
-                border: '1px solid #e8edf2', borderTop: `3px solid ${c.color}`,
-                boxShadow: '0 1px 4px rgba(0,0,0,.05)',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px' }}>{c.label}</span>
-                  <div style={{ width: 30, height: 30, borderRadius: 8, background: c.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.color, flexShrink: 0 }}>{c.icon}</div>
-                </div>
-                <div style={{ fontSize: 34, fontWeight: 800, color: c.color, fontFamily: 'Lexend,sans-serif', lineHeight: 1, marginBottom: 5 }}>{c.value}</div>
-                <div style={{ fontSize: 11, color: '#94a3b8' }}>{c.sub}</div>
+              { label: 'appelées',      value: jour.appeles,    color: '#334155' },
+              { label: 'répondu',       value: jour.repondu,    color: '#047857' },
+              { label: 'messagerie',    value: jour.messagerie, color: '#6d28d9' },
+              { label: 'sans réponse',  value: jour.nonRepondu, color: '#b45309' },
+              { label: 'SMS livrés',    value: jour.smsLivres,  color: '#1d4ed8' },
+              { label: 'SMS non reçus', value: jour.smsRates,   color: '#b91c1c' },
+            ].map((k, i, arr) => (
+              <div key={k.label} style={{ display: 'flex', alignItems: 'baseline', gap: 6, paddingRight: 16, marginRight: 16, borderRight: i < arr.length - 1 ? '1px solid #eef2f6' : 'none' }}>
+                <span style={{ fontSize: 21, fontWeight: 800, color: k.color, fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{k.value}</span>
+                <span style={{ fontSize: 11.5, color: '#64748b' }}>{k.label}</span>
               </div>
             ))}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span title="Patientes ayant cliqué un lien du mail de relance (toutes campagnes — un clic arrive souvent plusieurs jours après l'appel)" style={{ fontSize: 21, fontWeight: 800, color: '#15803d', fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{mailsCliques}</span>
+              <span style={{ fontSize: 11.5, color: '#64748b' }}>mails cliqués</span>
+            </div>
+            <div style={{ flex: 1, minWidth: 12 }} />
+            <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>{stats.total} relances · {tauxRappel}% résolues</span>
           </div>
+
+          {/* ── Filtres rapides : remplacent les cartes KPI et l'onglet « Suivi » ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+            {VUES.map(v => {
+              const n = relances.filter(v.match).length;
+              const active = vue === v.id;
+              const alerte = !!v.alerte && n > 0;
+              return (
+                <button key={v.id} onClick={() => setVue(v.id)} title={v.title} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 13px',
+                  borderRadius: 20, fontSize: 12.5, fontWeight: active ? 700 : 500, cursor: 'pointer',
+                  fontFamily: 'Lexend,sans-serif', transition: 'all .15s',
+                  background: active ? (alerte ? '#b91c1c' : '#4338ca') : 'white',
+                  color: active ? 'white' : (alerte ? '#b91c1c' : 'var(--text)'),
+                  border: `1px solid ${active ? 'transparent' : (alerte ? '#fecaca' : 'var(--border)')}`,
+                }}>
+                  {v.label}
+                  <span style={{
+                    fontSize: 10.5, fontWeight: 700, padding: '1px 6px', borderRadius: 9,
+                    background: active ? 'rgba(255,255,255,.22)' : (alerte ? '#fef2f2' : '#f1f5f9'),
+                    color: active ? 'white' : (alerte ? '#b91c1c' : '#64748b'),
+                  }}>{n}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ── Bandeaux d'action : visibles uniquement s'il y a à faire ────── */}
+          {aVerifier.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+              <AlertCircle size={15} style={{ color: '#b45309', flexShrink: 0 }} />
+              <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, flex: 1 }}>
+                <strong>{aVerifier.length}</strong> patiente{aVerifier.length > 1 ? 's affirment' : ' affirme'} avoir déjà envoyé son ordonnance — à vérifier avant de relancer.
+              </p>
+              <button onClick={() => setVue('deja_envoyee')} style={{ padding: '5px 12px', background: 'white', border: '1px solid #fde68a', borderRadius: 7, fontSize: 12, fontWeight: 700, color: '#b45309', cursor: 'pointer' }}>Voir la liste</button>
+            </div>
+          )}
+          {enEchec.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+              <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0 }} />
+              <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0, flex: 1 }}>
+                <strong>{enEchec.length}</strong> appel{enEchec.length > 1 ? 's' : ''} n'{enEchec.length > 1 ? 'ont' : 'a'} pas pu être lancé{enEchec.length > 1 ? 's' : ''}.
+              </p>
+              <button onClick={() => recallAll(enEchec)} style={{ padding: '5px 12px', background: '#b91c1c', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>Tout relancer</button>
+              <button onClick={() => setVue('echec_appel')} style={{ padding: '5px 12px', background: 'white', border: '1px solid #fecaca', borderRadius: 7, fontSize: 12, fontWeight: 700, color: '#b91c1c', cursor: 'pointer' }}>Voir</button>
+            </div>
+          )}
 
           {/* ── Toasts ─────────────────────────────────────────────────────── */}
           {successMsg && (
@@ -1655,9 +1495,6 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
               </button>
             )}
             <div style={{ flex: 1 }} />
-            <button onClick={() => setFilterToday(p => !p)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: filterToday ? '#fef3c7' : 'white', border: `1px solid ${filterToday ? '#fde68a' : 'var(--border)'}`, borderRadius: 8, fontSize: 12, fontWeight: 600, color: filterToday ? '#b45309' : 'var(--text)', cursor: 'pointer' }}>
-              <Clock size={13} /> À appeler
-            </button>
             <button onClick={() => setSortByPriority(p => !p)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: sortByPriority ? '#eef2ff' : 'white', border: `1px solid ${sortByPriority ? '#c7d2fe' : 'var(--border)'}`, borderRadius: 8, fontSize: 12, fontWeight: 600, color: sortByPriority ? '#4f46e5' : 'var(--text)', cursor: 'pointer' }}>
               <TrendingUp size={13} /> Priorité
             </button>
@@ -1688,15 +1525,15 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
             ) : filtered.length === 0 ? (
               <div style={{ textAlign: 'center', padding: 60, color: 'var(--muted)' }}>
                 <FileText size={28} strokeWidth={1.5} style={{ opacity: .4, marginBottom: 10 }} />
-                <p style={{ fontSize: 13 }}>{filterStatut || search || filterToday ? 'Aucune relance pour ces filtres.' : relances.length > 0 ? 'Toutes les relances ont été traitées 🎉 (sélectionnez un statut pour les revoir).' : 'Aucune relance — importez un fichier Excel.'}</p>
-                {!filterStatut && !search && !filterToday && relances.length === 0 && <button className="btn btn-primary" onClick={() => setShowImport(true)} style={{ marginTop: 12 }}><Upload size={14} /> Importer</button>}
+                <p style={{ fontSize: 13 }}>{filterStatut || search || vue !== 'a_traiter' ? 'Aucune relance pour ces filtres.' : relances.length > 0 ? 'Tout est traité 🎉 — cliquez « Tout » pour revoir l’ensemble.' : 'Aucune relance — importez un fichier Excel.'}</p>
+                {!filterStatut && !search && vue === 'a_traiter' && relances.length === 0 && <button className="btn btn-primary" onClick={() => setShowImport(true)} style={{ marginTop: 12 }}><Upload size={14} /> Importer</button>}
               </div>
             ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e8edf2' }}>
-                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
+                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'SMS / Mail', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
                         <th key={i} style={{ padding: '11px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 10.5, color: '#64748b', letterSpacing: '.5px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}
                     </tr>
@@ -1745,17 +1582,23 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                               <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, fontFamily: 'Lexend,sans-serif', background: STATUT_CONFIG[r.statut]?.bg || '#f3f4f6', color: STATUT_CONFIG[r.statut]?.color || '#6b7280' }}>
                                 {r.statut}
                               </span>
-                              {r.sms_echec && (
-                                <span title="SMS non livré — relance manuelle requise" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', whiteSpace: 'nowrap' }}>
-                                  ⚠ SMS non livré
-                                </span>
-                              )}
+                              {/* Le badge SMS et le badge « fixe » vivent désormais dans la colonne SMS. */}
                               {r.ordonnance_deja_envoyee && (
-                                <span title="La patiente dit avoir déjà envoyé son ordonnance — à vérifier" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fff7ed', color: '#b45309', border: '1px solid #fed7aa', whiteSpace: 'nowrap' }}>
-                                  📄 Dit avoir envoyé
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <span title="La patiente dit avoir déjà envoyé son ordonnance — à vérifier" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fff7ed', color: '#b45309', border: '1px solid #fed7aa', whiteSpace: 'nowrap' }}>
+                                    📄 Dit avoir envoyé
+                                  </span>
+                                  <button onClick={() => markOrdoVerified(r)} title="Dossier contrôlé — retirer ce signalement" style={{ padding: '1px 7px', borderRadius: 9, fontSize: 10, fontWeight: 700, background: 'white', color: '#047857', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
+                                    Vérifié
+                                  </button>
                                 </span>
                               )}
-                              {isFixe(r.telephone) && <FixeBadge />}
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                              <SmsChip r={r} />
+                              <MailChip r={r} />
                             </div>
                           </td>
                           <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: r.nb_tentatives > 0 ? 'var(--blue)' : 'var(--muted)', fontSize: 13, fontFamily: 'Lexend,sans-serif' }}>

@@ -1,0 +1,105 @@
+<!--
+  Mail de relance ordonnance — Tire Lait Express
+  Source de vérité pour le template Brevo « Relance ordonnance ».
+  Variables Brevo disponibles : {{params.prenom}} (vide si inconnu → « Bonjour, »)
+  Après modification ici, republier le template dans Brevo (voir MODE_OP_LIENS_SMS.md).
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f1f5f9;margin:0;padding:24px 12px;font-family:Arial,Helvetica,sans-serif;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+
+        <!-- En-tête -->
+        <tr>
+          <td style="background-color:#1a5ea0;padding:22px 28px;">
+            <span style="color:#ffffff;font-size:19px;font-weight:bold;letter-spacing:.5px;">TIRE LAIT EXPRESS</span>
+          </td>
+        </tr>
+
+        <!-- Bandeau action requise -->
+        <tr>
+          <td style="background-color:#fffbeb;border-bottom:1px solid #fde68a;padding:12px 28px;">
+            <span style="color:#b45309;font-size:13px;font-weight:bold;">Action requise — renouvellement de votre ordonnance</span>
+          </td>
+        </tr>
+
+        <!-- Corps -->
+        <tr>
+          <td style="padding:28px;color:#1e293b;font-size:15px;line-height:1.6;">
+            <p style="margin:0 0 16px;">Bonjour {{params.prenom}},</p>
+
+            <p style="margin:0 0 20px;">
+              Nous sommes toujours dans l'attente de votre <strong>ordonnance de renouvellement</strong>.
+              Merci de nous la transmettre au plus vite via notre Chatbot, onglet <strong>Renouvellement</strong>.
+            </p>
+
+            <!-- CTA -->
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 24px;">
+              <tr>
+                <td align="center" bgcolor="#1a5ea0" style="border-radius:8px;">
+                  <a href="https://tire-lait-express.fr/?tlx_renew=1"
+                     style="display:inline-block;padding:13px 28px;color:#ffffff;font-size:15px;font-weight:bold;text-decoration:none;border-radius:8px;">
+                    Envoyer mon ordonnance
+                  </a>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Rappel des conditions -->
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8fafc;border-left:3px solid #1a5ea0;border-radius:4px;margin:0 0 20px;">
+              <tr>
+                <td style="padding:14px 18px;font-size:14px;line-height:1.6;color:#334155;">
+                  <strong style="color:#0f172a;">Pour être valable, l'ordonnance doit :</strong>
+                  <ul style="margin:8px 0 0;padding-left:20px;">
+                    <li style="margin-bottom:5px;">être <strong>à votre nom</strong> ;</li>
+                    <li style="margin-bottom:5px;">porter <strong>uniquement sur la location d'un tire-lait</strong> ;</li>
+                    <li>ne pas avoir <strong>déjà été utilisée</strong>.</li>
+                  </ul>
+                </td>
+              </tr>
+            </table>
+
+            <p style="margin:0 0 20px;color:#b91c1c;">
+              Sans cette nouvelle prescription, nous vous adresserons directement les factures pour règlement.
+            </p>
+
+            <hr style="border:none;border-top:1px solid #e2e8f0;margin:0 0 20px;" />
+
+            <p style="margin:0 0 6px;font-size:14px;color:#475569;">
+              Vous souhaitez retourner votre matériel ?
+            </p>
+            <p style="margin:0 0 24px;font-size:14px;">
+              <a href="https://tire-lait-express.fr/fr/module/eg_etiquettechroposte/etiquette" style="color:#1a5ea0;font-weight:bold;">
+                Télécharger votre étiquette de retour
+              </a>
+            </p>
+
+            <p style="margin:0;font-size:15px;color:#1e293b;">
+              Cordialement,<br />
+              <strong>L'ÉQUIPE TIRE LAIT EXPRESS</strong>
+            </p>
+          </td>
+        </tr>
+
+        <!-- Pied : mention no-reply. « ci-dessus » plutôt que « du message reçu » pour
+             pointer sans ambiguïté vers le bouton et les liens de ce mail. -->
+        <tr>
+          <td style="background-color:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 28px;">
+            <p style="margin:0 0 10px;font-size:12px;color:#475569;line-height:1.55;">
+              Cette adresse est utilisée uniquement pour l'envoi automatique de notifications
+              et ne reçoit pas de réponses.
+              <strong style="color:#0f172a;">Merci de ne pas répondre à ce message</strong>
+              et de suivre les instructions indiquées ci-dessus.
+            </p>
+            <p style="margin:0;font-size:11.5px;color:#94a3b8;line-height:1.5;">
+              Ce message vous est adressé dans le cadre de la location de votre tire-lait.
+              Si les liens ne s'ouvrent pas, copiez cette adresse dans votre navigateur :
+              <span style="color:#64748b;">https://tire-lait-express.fr/?tlx_renew=1</span>
+            </p>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
