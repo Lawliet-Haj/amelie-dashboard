@@ -231,7 +231,7 @@ const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur', 'Raccroché
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'tout';
+type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
   { id: 'a_traiter',     label: 'À traiter',     match: r => !TRAITES.includes(r.statut),  title: 'Tout ce qui reste à appeler' },
@@ -242,6 +242,7 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
   { id: 'injoignables',  label: 'Injoignables',  match: isInjoignable,     alerte: true,   title: 'Ni joint à l’oral, ni SMS livré : aucun contact effectif' },
   { id: 'echec_appel',   label: 'En échec',      match: r => !!r.echec_motif, alerte: true, title: 'L’appel n’a pas pu être lancé' },
   { id: 'deja_envoyee',  label: 'Déjà envoyée',  match: r => !!r.ordonnance_deja_envoyee, alerte: true, title: 'La patiente affirme avoir déjà transmis son ordonnance — à vérifier' },
+  { id: 'mail_clique',   label: 'Mail cliqué',   match: r => r.email_statut === 'clique',  title: 'A cliqué un lien du mail — le signal d’engagement le plus fiable' },
   { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
 ];
 
@@ -1380,24 +1381,39 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           {/* ── Aujourd'hui : une seule ligne pour piloter la campagne en cours ── */}
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 12, boxShadow: 'var(--shadow-sm)' }}>
             <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif', marginRight: 18 }}>Aujourd'hui</span>
-            {[
-              { label: 'appelées',      value: jour.appeles,    color: '#334155' },
-              { label: 'répondu',       value: jour.repondu,    color: '#047857' },
-              { label: 'messagerie',    value: jour.messagerie, color: '#6d28d9' },
-              { label: 'raccroché',     value: jour.raccroche,  color: '#9f1239' },
-              { label: 'sans réponse',  value: jour.nonRepondu, color: '#b45309' },
-              { label: 'SMS livrés',    value: jour.smsLivres,  color: '#1d4ed8' },
-              { label: 'SMS non reçus', value: jour.smsRates,   color: '#b91c1c' },
-            ].map((k, i, arr) => (
-              <div key={k.label} style={{ display: 'flex', alignItems: 'baseline', gap: 6, paddingRight: 16, marginRight: 16, borderRight: i < arr.length - 1 ? '1px solid #eef2f6' : 'none' }}>
+            {/* Chaque compteur est cliquable : il applique le filtre correspondant au tableau. */}
+            {([
+              { label: 'appelées',      value: jour.appeles,    color: '#334155', vue: 'tout' as VueFiltre,          statut: '' },
+              { label: 'répondu',       value: jour.repondu,    color: '#047857', vue: 'tout' as VueFiltre,          statut: 'Répondu SMS' },
+              { label: 'messagerie',    value: jour.messagerie, color: '#6d28d9', vue: 'messagerie' as VueFiltre,    statut: '' },
+              { label: 'raccroché',     value: jour.raccroche,  color: '#9f1239', vue: 'raccroche' as VueFiltre,     statut: '' },
+              { label: 'sans réponse',  value: jour.nonRepondu, color: '#b45309', vue: 'tout' as VueFiltre,          statut: 'Non répondu' },
+              { label: 'SMS livrés',    value: jour.smsLivres,  color: '#1d4ed8', vue: 'tout' as VueFiltre,          statut: '' },
+              { label: 'SMS non reçus', value: jour.smsRates,   color: '#b91c1c', vue: 'sms_non_livre' as VueFiltre, statut: '' },
+            ]).map((k, i, arr) => (
+              <button
+                key={k.label}
+                onClick={() => { setVue(k.vue); setFilterStatut(k.statut); }}
+                title={`Afficher : ${k.label}`}
+                style={{
+                  display: 'flex', alignItems: 'baseline', gap: 6, paddingRight: 16, marginRight: 16,
+                  borderRight: i < arr.length - 1 ? '1px solid #eef2f6' : 'none',
+                  background: 'none', border: 'none', borderRadius: 0, cursor: 'pointer',
+                  padding: '2px 16px 2px 0', font: 'inherit', textAlign: 'left',
+                }}
+              >
                 <span style={{ fontSize: 21, fontWeight: 800, color: k.color, fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{k.value}</span>
-                <span style={{ fontSize: 11.5, color: '#64748b' }}>{k.label}</span>
-              </div>
+                <span style={{ fontSize: 11.5, color: '#64748b', textDecoration: 'underline', textDecorationColor: '#e2e8f0', textUnderlineOffset: 3 }}>{k.label}</span>
+              </button>
             ))}
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-              <span title="Patientes ayant cliqué un lien du mail de relance (toutes campagnes — un clic arrive souvent plusieurs jours après l'appel)" style={{ fontSize: 21, fontWeight: 800, color: '#15803d', fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{mailsCliques}</span>
-              <span style={{ fontSize: 11.5, color: '#64748b' }}>mails cliqués</span>
-            </div>
+            <button
+              onClick={() => { setVue('mail_clique'); setFilterStatut(''); }}
+              title="Patientes ayant cliqué un lien du mail de relance (toutes campagnes — un clic arrive souvent plusieurs jours après l'appel)"
+              style={{ display: 'flex', alignItems: 'baseline', gap: 6, background: 'none', border: 'none', cursor: 'pointer', padding: 2, font: 'inherit' }}
+            >
+              <span style={{ fontSize: 21, fontWeight: 800, color: '#15803d', fontFamily: 'Lexend,sans-serif', lineHeight: 1 }}>{mailsCliques}</span>
+              <span style={{ fontSize: 11.5, color: '#64748b', textDecoration: 'underline', textDecorationColor: '#e2e8f0', textUnderlineOffset: 3 }}>mails cliqués</span>
+            </button>
             <div style={{ flex: 1, minWidth: 12 }} />
             <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>{stats.total} relances · {tauxRappel}% résolues</span>
           </div>
