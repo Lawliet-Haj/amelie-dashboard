@@ -44,9 +44,17 @@ h1, h2, h3, h4 { font-family: 'Lexend', sans-serif; }
 ::-webkit-scrollbar-thumb { background: #c5d8e8; border-radius: 4px; }
 
 /* ── Animations ────────────────────────────────────────────── */
+/*
+ * ⚠️ Le dernier keyframe doit finir sur `transform: none`, PAS sur `translateY(0)`.
+ * Ces animations utilisent `animation-fill-mode: both`, donc la valeur finale PERSISTE.
+ * Or un transform non nul fait de l'élément le référentiel de ses descendants en
+ * `position: fixed` : les panneaux (Transcript, Historique) se positionnaient alors par
+ * rapport au haut de la liste et non de la fenêtre — donc hors écran dès qu'on avait
+ * scrollé. `none` s'interpole normalement depuis `translateY(8px)` (matrice identité).
+ */
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: none; }
 }
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }
