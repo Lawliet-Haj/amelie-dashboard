@@ -25,6 +25,8 @@ const STATUT_CONFIG: Record<string, { color: string; bg: string; hex: string; st
   'À appeler':         { color: '#1d4ed8', bg: '#eff6ff', hex: '#3b82f6', stripe: '#bfdbfe' },
   'Non répondu':       { color: '#92400e', bg: '#fffbeb', hex: '#f59e0b', stripe: '#fde68a' },
   'Répondeur':         { color: '#5b21b6', bg: '#f5f3ff', hex: '#8b5cf6', stripe: '#c4b5fd' },
+  // A décroché puis coupé sans parler : joignable, mais n'a pas entendu le message.
+  'Raccroché':         { color: '#9f1239', bg: '#fff1f2', hex: '#f43f5e', stripe: '#fda4af' },
   'Répondu SMS':       { color: '#065f46', bg: '#ecfdf5', hex: '#10b981', stripe: '#6ee7b7' },
   'Répondu transfert': { color: '#0e7490', bg: '#ecfeff', hex: '#06b6d4', stripe: '#a5f3fc' },
 };
@@ -151,8 +153,9 @@ function smsEtat(r: Relance): SmsEtat {
   if (s === 'envoye') return 'envoye';
   if (r.sms_echec) return 'echec';                                    // lignes antérieures à sms_statut
   if (isFixe(r.telephone)) return 'fixe';
-  // Un SMS était dû (patiente atteinte ou messagerie) mais rien n'a été tracé → anomalie à voir
-  if (r.statut === 'Répondu SMS' || r.statut === 'Répondeur') return 'aucun';
+  // Un SMS était dû (patiente atteinte, messagerie, ou raccrochage) mais rien n'a été
+  // tracé → anomalie à rendre visible. Mêmes statuts que la condition d'envoi de W3.
+  if (r.statut === 'Répondu SMS' || r.statut === 'Répondeur' || r.statut === 'Raccroché') return 'aucun';
   return 'na';
 }
 
@@ -214,20 +217,27 @@ function isInjoignable(r: Relance): boolean {
   return smsEtat(r) !== 'livre';                                                    // Répondeur / Non répondu
 }
 
-/** Statuts considérés comme traités : plus rien à appeler. */
-const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur'];
+/**
+ * Statuts considérés comme traités : la patiente a été CONTACTÉE (SMS + mail partis),
+ * il n'y a plus d'appel à passer. Elle sort donc de la liste « À traiter ».
+ * ⚠️ « Non répondu » n'en fait volontairement PAS partie : personne n'a décroché, donc
+ * rien n'a été transmis — c'est un candidat au rappel, pas un dossier traité.
+ * « Raccroché » en fait partie : elle a coupé sans écouter, mais le SMS et le mail sont partis.
+ */
+const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur', 'Raccroché'];
 
 /**
  * Filtres rapides de la liste. Ils remplacent les anciennes cartes KPI, l'onglet
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'tout';
+type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
   { id: 'a_traiter',     label: 'À traiter',     match: r => !TRAITES.includes(r.statut),  title: 'Tout ce qui reste à appeler' },
   { id: 'a_appeler',     label: 'À appeler',     match: r => r.statut === 'À appeler',     title: 'Jamais encore appelées' },
   { id: 'messagerie',    label: 'Messagerie',    match: r => r.statut === 'Répondeur',     title: 'Message vocal laissé — le SMS est le seul vrai point de contact' },
+  { id: 'raccroche',     label: 'Raccroché',     match: r => r.statut === 'Raccroché',     title: 'A décroché puis coupé sans écouter — SMS et mail envoyés, à rappeler si besoin' },
   { id: 'sms_non_livre', label: 'SMS non reçu',  match: smsNonRecu,        alerte: true,   title: 'Le lien ordonnance n’est jamais arrivé' },
   { id: 'injoignables',  label: 'Injoignables',  match: isInjoignable,     alerte: true,   title: 'Ni joint à l’oral, ni SMS livré : aucun contact effectif' },
   { id: 'echec_appel',   label: 'En échec',      match: r => !!r.echec_motif, alerte: true, title: 'L’appel n’a pas pu être lancé' },
@@ -1161,6 +1171,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     appeles:    duJour.length,
     repondu:    duJour.filter(r => r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert').length,
     messagerie: duJour.filter(r => r.statut === 'Répondeur').length,
+    raccroche:  duJour.filter(r => r.statut === 'Raccroché').length,
     nonRepondu: duJour.filter(r => r.statut === 'Non répondu').length,
     smsLivres:  duJour.filter(r => smsEtat(r) === 'livre').length,
     smsRates:   duJour.filter(smsNonRecu).length,
@@ -1373,6 +1384,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
               { label: 'appelées',      value: jour.appeles,    color: '#334155' },
               { label: 'répondu',       value: jour.repondu,    color: '#047857' },
               { label: 'messagerie',    value: jour.messagerie, color: '#6d28d9' },
+              { label: 'raccroché',     value: jour.raccroche,  color: '#9f1239' },
               { label: 'sans réponse',  value: jour.nonRepondu, color: '#b45309' },
               { label: 'SMS livrés',    value: jour.smsLivres,  color: '#1d4ed8' },
               { label: 'SMS non reçus', value: jour.smsRates,   color: '#b91c1c' },

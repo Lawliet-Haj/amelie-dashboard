@@ -70,7 +70,10 @@ export interface Relance {
   telephone: string | null;
   date_echeance: string | null;
   date_debut_location?: string | null; // date de début de location (YYYY-MM-DD)
-  statut: 'À appeler' | 'Non répondu' | 'Répondeur' | 'Répondu SMS' | 'Répondu transfert';
+  // « Raccroché » = quelqu'un a décroché puis coupé pendant l'annonce, sans parler.
+  // Distinct de « Répondeur » : le transcript est identique, seul termination_reason
+  // (ElevenLabs) permet de trancher — c'est W3 qui l'applique de façon déterministe.
+  statut: 'À appeler' | 'Non répondu' | 'Répondeur' | 'Raccroché' | 'Répondu SMS' | 'Répondu transfert';
   nb_tentatives: number;
   dernier_appel: string | null;
   resultat: string | null;
