@@ -204,6 +204,31 @@ function MailChip({ r }: { r: Relance }) {
   );
 }
 
+/**
+ * Le message vocal a-t-il réellement été déposé sur la messagerie ?
+ * Rien n'est affiché si l'appel n'est pas tombé sur une machine (vocal_statut null).
+ * `non_depose` est le cas à surveiller : messagerie atteinte, aucun message laissé.
+ */
+const VOCAL_CONFIG: Record<string, { label: string; bg: string; color: string; border: string; title: string }> = {
+  depose_el:      { label: 'Vocal déposé',      bg: '#ecfdf5', color: '#047857', border: '#a7f3d0', title: 'Message vocal déposé par ElevenLabs (détection de messagerie réussie)' },
+  depose_agent:   { label: 'Vocal déposé',      bg: '#ecfdf5', color: '#047857', border: '#a7f3d0', title: 'Message vocal récité par Amélie après l’annonce' },
+  non_applicable: { label: 'Filtrage · sans msg', bg: '#f1f5f9', color: '#475569', border: '#cbd5e1', title: 'Serveur de filtrage d’appels : aucun message n’est attendu, personne ne l’écouterait' },
+  non_depose:     { label: 'Vocal NON déposé ⚠', bg: '#fef2f2', color: '#b91c1c', border: '#fecaca', title: 'Messagerie atteinte mais AUCUN message laissé — la patiente n’a été touchée que par le SMS et le mail' },
+};
+
+function VocalChip({ r }: { r: Relance }) {
+  const cfg = r.vocal_statut ? VOCAL_CONFIG[r.vocal_statut] : null;
+  if (!cfg) return null;
+  return (
+    <span
+      title={cfg.title}
+      style={{ display: 'inline-block', fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 8, background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, whiteSpace: 'nowrap' }}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
 /** Le lien ordonnance n'est jamais arrivé : échec Brevo, ou envoi jamais enregistré. */
 function smsNonRecu(r: Relance): boolean {
   const e = smsEtat(r);
@@ -231,7 +256,7 @@ const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur', 'Raccroché
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'tout';
+type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
   { id: 'a_traiter',     label: 'À traiter',     match: r => !TRAITES.includes(r.statut),  title: 'Tout ce qui reste à appeler' },
@@ -243,6 +268,7 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
   { id: 'echec_appel',   label: 'En échec',      match: r => !!r.echec_motif, alerte: true, title: 'L’appel n’a pas pu être lancé' },
   { id: 'deja_envoyee',  label: 'Déjà envoyée',  match: r => !!r.ordonnance_deja_envoyee, alerte: true, title: 'La patiente affirme avoir déjà transmis son ordonnance — à vérifier' },
   { id: 'mail_clique',   label: 'Mail cliqué',   match: r => r.email_statut === 'clique',  title: 'A cliqué un lien du mail — le signal d’engagement le plus fiable' },
+  { id: 'vocal_manquant', label: 'Vocal manquant', match: r => r.vocal_statut === 'non_depose', alerte: true, title: 'Messagerie atteinte mais aucun message vocal laissé — seuls le SMS et le mail sont partis' },
   { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
 ];
 
@@ -1176,6 +1202,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     nonRepondu: duJour.filter(r => r.statut === 'Non répondu').length,
     smsLivres:  duJour.filter(r => smsEtat(r) === 'livre').length,
     smsRates:   duJour.filter(smsNonRecu).length,
+    // Messageries atteintes sans message laissé — le trou que l'agent laisse quand
+    // la détection EL échoue et qu'il ne récite pas le message lui-même.
+    vocalManquant: duJour.filter(r => r.vocal_statut === 'non_depose').length,
   };
   // Clics sur les liens du mail — pas limité au jour : le clic arrive souvent plus tard que l'appel.
   const mailsCliques = relances.filter(r => r.email_statut === 'clique').length;
@@ -1390,6 +1419,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
               { label: 'sans réponse',  value: jour.nonRepondu, color: '#b45309', vue: 'tout' as VueFiltre,          statut: 'Non répondu' },
               { label: 'SMS livrés',    value: jour.smsLivres,  color: '#1d4ed8', vue: 'tout' as VueFiltre,          statut: '' },
               { label: 'SMS non reçus', value: jour.smsRates,   color: '#b91c1c', vue: 'sms_non_livre' as VueFiltre, statut: '' },
+              { label: 'vocaux manquants', value: jour.vocalManquant, color: '#b91c1c', vue: 'vocal_manquant' as VueFiltre, statut: '' },
             ]).map((k, i, arr) => (
               <button
                 key={k.label}
@@ -1561,7 +1591,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                   <thead>
                     <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e8edf2' }}>
-                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'SMS / Mail', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
+                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'SMS / Mail / Vocal', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
                         <th key={i} style={{ padding: '11px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 10.5, color: '#64748b', letterSpacing: '.5px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
                       ))}
                     </tr>
@@ -1627,6 +1657,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
                               <SmsChip r={r} />
                               <MailChip r={r} />
+                              <VocalChip r={r} />
                             </div>
                           </td>
                           <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: r.nb_tentatives > 0 ? 'var(--blue)' : 'var(--muted)', fontSize: 13, fontFamily: 'Lexend,sans-serif' }}>

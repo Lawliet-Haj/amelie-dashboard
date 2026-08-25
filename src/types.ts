@@ -109,6 +109,13 @@ export interface Relance {
   email_clic_le?: string | null;
   // Dernier lien cliqué — distingue « envoie son ordonnance » de « veut rendre le matériel »
   email_clic_url?: string | null;
+  // Le message vocal a-t-il réellement été déposé sur la messagerie ?
+  //   'depose_el'      → ElevenLabs a joué son champ voicemail_message (détection réussie)
+  //   'depose_agent'   → Amélie a récité le message après l'annonce
+  //   'non_applicable' → serveur de filtrage : aucun message n'est attendu
+  //   'non_depose'     → ⚠️ messagerie atteinte et AUCUN message laissé
+  //   null             → l'appel n'est pas tombé sur une messagerie
+  vocal_statut?: 'depose_el' | 'depose_agent' | 'non_applicable' | 'non_depose' | null;
   // Call failure tracking — W12 sets 'Échec déclenchement' on trigger failure, W3 sets 'Appel échoué' on technical call failure; cleared on success
   echec_motif?: string | null;
   dernier_echec?: string | null;
