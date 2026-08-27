@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { read, utils } from 'xlsx';
 import {
   Upload, RefreshCw, Edit2, X, CheckCircle, FileText, AlertCircle,
   Phone, TrendingUp, PhoneCall, CheckSquare, Trash2, Download,
   MessageSquare, History, Play, Pause, ChevronRight,
-  UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle,
+  UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle, CloudDownload, Send,
 } from 'lucide-react';
 import type { AuthUser, Relance, RelancesStats, BatchGroup } from '../types';
 
@@ -18,6 +19,21 @@ function loadBatchNote(batch_id: string): string {
 }
 function saveBatchNote(batch_id: string, note: string) {
   try { const m = JSON.parse(localStorage.getItem(BATCH_NOTES_KEY) || '{}'); m[batch_id] = note; localStorage.setItem(BATCH_NOTES_KEY, JSON.stringify(m)); } catch { /* noop */ }
+}
+
+/**
+ * Rend les overlays (modals, panneaux latéraux) directement dans <body>.
+ *
+ * ⚠️ NE PAS retirer. Un élément `position: fixed` n'est PAS positionné par rapport à la
+ * fenêtre dès qu'un ancêtre porte un `transform`, un `filter` ou un `will-change` : cet
+ * ancêtre devient son bloc conteneur. Les vues sont enveloppées dans `.animate-fade-up`
+ * (animation `fadeUp`, qui manipule `transform`), et le conteneur de scroll est `<main>` :
+ * les modals et panneaux se retrouvaient donc positionnés par rapport au haut de la liste
+ * et non de l'écran — invisibles sans scroller dès que la liste était longue.
+ * Le portail supprime le problème à la racine, quel que soit le style des ancêtres.
+ */
+function Portal({ children }: { children: React.ReactNode }) {
+  return createPortal(children, document.body);
 }
 
 // ─── Status config ────────────────────────────────────────────────────────────
@@ -47,20 +63,58 @@ function priorityScore(r: Relance): number {
   return Math.max(0, s);
 }
 
-function formatDate(s: string | null) {
-  if (!s) return '—';
-  try { const d = new Date(s + (s.includes('T') ? '' : 'T00:00:00')); return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }); } catch { return s; }
+const TZ = 'Europe/Paris';
+
+/**
+ * Interprète un horodatage venu de PostgreSQL comme de l'UTC.
+ *
+ * ⚠️ La base tourne en UTC (`SHOW timezone` = UTC) et les colonnes sont des `TIMESTAMP`
+ * SANS fuseau : l'API renvoie donc « 2026-08-27 10:31:00 », qui est de l'heure UTC.
+ * Or JavaScript parse cette forme comme une heure LOCALE — l'écran affichait donc deux
+ * heures de retard en été. On force l'interprétation en UTC, le rendu se faisant ensuite
+ * explicitement en heure de Paris.
+ */
+function parseUtc(s: string | null | undefined): Date | null {
+  if (!s) return null;
+  let v = String(s).trim();
+  const aDejaUnFuseau = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(v);
+  if (!aDejaUnFuseau) v = v.replace(' ', 'T') + 'Z';
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Date seule (colonne DATE, sans heure) : aucune conversion de fuseau à faire. */
+function formatDate(s: string | null) {
+  if (!s) return '—';
+  const d = new Date(String(s).slice(0, 10) + 'T12:00:00Z');   // midi UTC : jamais de bascule de jour
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: TZ });
+}
+
+/** Horodatage complet, rendu en heure de Paris. */
 function formatDateTime(s: string | null) {
   if (!s) return '—';
-  try { const d = new Date(s); return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); } catch { return s; }
+  const d = parseUtc(s);
+  if (!d) return s;
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', timeZone: TZ })
+    + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: TZ });
 }
 
 function formatDuration(sec: number | null | undefined) {
   if (!sec || sec === 0) return '—';
   if (sec < 60) return `${sec}s`;
   return `${Math.floor(sec / 60)}m${sec % 60 > 0 ? String(sec % 60).padStart(2, '0') + 's' : ''}`;
+}
+
+
+/**
+ * Jour PARISIEN d'un horodatage UTC, au format YYYY-MM-DD — comparable à un <input type="date">.
+ * Le fuseau compte ici : un appel à 23h30 heure de Paris est stocké 21h30 UTC, mais
+ * appartient bien au jour parisien courant.
+ */
+function jourLocal(s: string | null | undefined): string {
+  const d = parseUtc(s);
+  return d ? d.toLocaleDateString('sv-SE', { timeZone: TZ }) : '';
 }
 
 function isEcheancePassed(s: string | null) {
@@ -235,36 +289,48 @@ function smsNonRecu(r: Relance): boolean {
   return e === 'echec' || e === 'aucun';
 }
 
-/** Aucun contact effectif : ni joint à l'oral, ni SMS livré. */
-function isInjoignable(r: Relance): boolean {
-  if (r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') return false; // jointe à l'oral
-  if (r.statut === 'À appeler') return false;                                       // pas encore tentée
-  return smsEtat(r) !== 'livre';                                                    // Répondeur / Non répondu
+/**
+ * Aucun contact ABOUTI, sur aucun des trois canaux. C'est la définition de « À traiter ».
+ *
+ * ⚠️ Le nombre de tentatives n'entre PAS dans le calcul : une patiente appelée sept fois
+ * sans jamais décrocher, et dont ni le SMS ni le mail ne sont arrivés, reste entièrement
+ * à traiter. Ce qui compte est ce qui lui est parvenu, pas l'effort déjà dépensé.
+ *
+ * Un canal compte comme abouti si :
+ *   voix  — elle a parlé (Répondu SMS / transfert) OU un message vocal a été déposé
+ *   SMS   — Brevo confirme la livraison
+ *   mail  — livré, ouvert ou cliqué ; « envoyé » n'est PAS une preuve de réception
+ */
+function aucunContact(r: Relance): boolean {
+  const jointeVocalement = r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'
+    || ['depose_el', 'depose_agent'].includes(String(r.vocal_statut || ''));
+  if (jointeVocalement) return false;
+  if (smsEtat(r) === 'livre') return false;
+  if (['livre', 'ouvert', 'clique'].includes(String(r.email_statut || ''))) return false;
+  return true;
 }
 
-/**
- * Statuts considérés comme traités : la patiente a été CONTACTÉE (SMS + mail partis),
- * il n'y a plus d'appel à passer. Elle sort donc de la liste « À traiter ».
- * ⚠️ « Non répondu » n'en fait volontairement PAS partie : personne n'a décroché, donc
- * rien n'a été transmis — c'est un candidat au rappel, pas un dossier traité.
- * « Raccroché » en fait partie : elle a coupé sans écouter, mais le SMS et le mail sont partis.
+
+/*
+ * Note : la liste « À traiter » ne repose plus sur le statut de l'appel mais sur ce qui est
+ * RÉELLEMENT parvenu à la patiente — voir `aucunContact()`. Un statut « Répondeur » dont le
+ * SMS a échoué et dont le mail n'est jamais arrivé reste donc à traiter, alors que l'ancienne
+ * logique par statut le considérait comme réglé.
  */
-const TRAITES = ['Répondu SMS', 'Répondu transfert', 'Répondeur', 'Raccroché'];
 
 /**
  * Filtres rapides de la liste. Ils remplacent les anciennes cartes KPI, l'onglet
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'injoignables' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
+type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
-  { id: 'a_traiter',     label: 'À traiter',     match: r => !TRAITES.includes(r.statut),  title: 'Tout ce qui reste à appeler' },
+  { id: 'a_traiter',     label: 'À traiter',     match: aucunContact,                      title: 'Jamais appelées, aucun SMS livré, aucun mail reçu — rien ne leur est parvenu' },
   { id: 'a_appeler',     label: 'À appeler',     match: r => r.statut === 'À appeler',     title: 'Jamais encore appelées' },
   { id: 'messagerie',    label: 'Messagerie',    match: r => r.statut === 'Répondeur',     title: 'Message vocal laissé — le SMS est le seul vrai point de contact' },
   { id: 'raccroche',     label: 'Raccroché',     match: r => r.statut === 'Raccroché',     title: 'A décroché puis coupé sans écouter — SMS et mail envoyés, à rappeler si besoin' },
   { id: 'sms_non_livre', label: 'SMS non reçu',  match: smsNonRecu,        alerte: true,   title: 'Le lien ordonnance n’est jamais arrivé' },
-  { id: 'injoignables',  label: 'Injoignables',  match: isInjoignable,     alerte: true,   title: 'Ni joint à l’oral, ni SMS livré : aucun contact effectif' },
   { id: 'echec_appel',   label: 'En échec',      match: r => !!r.echec_motif, alerte: true, title: 'L’appel n’a pas pu être lancé' },
   { id: 'deja_envoyee',  label: 'Déjà envoyée',  match: r => !!r.ordonnance_deja_envoyee, alerte: true, title: 'La patiente affirme avoir déjà transmis son ordonnance — à vérifier' },
   { id: 'mail_clique',   label: 'Mail cliqué',   match: r => r.email_statut === 'clique',  title: 'A cliqué un lien du mail — le signal d’engagement le plus fiable' },
@@ -306,6 +372,60 @@ async function fetchRelances(token: string): Promise<{ relances: Relance[]; stat
 }
 async function importRelances(token: string, rows: object[], batch_id: string, batch_label: string | null): Promise<{ ok: boolean; inserted?: number; batch_id?: string }> {
   try { const r = await fetch(`${API_BASE}/webhook/dashboard-import-relances`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ rows, batch_id, batch_label }), signal: AbortSignal.timeout(20000) }); return r.json(); } catch { return { ok: false }; }
+}
+/** Résultat de l'extraction ORTHOP (W-ORTHOP-Extraction). */
+export interface OrthopResult {
+  ok?: boolean;
+  mode?: string;
+  date?: string;
+  batch_label?: string | null;
+  dossiers_trouves?: number;
+  ecartes_sans_ligne_a_renouveler?: number;
+  eligibles?: number;
+  inseres?: number;
+  deja_presents?: number;
+  erreur?: string;
+}
+/**
+ * Extraction directe depuis ORTHOP (API SOAP Must G5), sans passer par un export Excel.
+ * L'appel enchaîne 3 requêtes SOAP côté n8n (~10 s pour une centaine de dossiers), d'où
+ * le délai d'attente généreux. L'opération est idempotente : relancer la même date
+ * n'insère rien de nouveau (index unique sur le n° de prescription ORTHOP).
+ */
+async function extractOrthop(token: string, date: string): Promise<OrthopResult> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/orthop-extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ date }),
+      signal: AbortSignal.timeout(180000),
+    });
+    if (!r.ok) return { ok: false, erreur: `Le serveur a répondu ${r.status}` };
+    const j = await r.json();
+    return Array.isArray(j) ? (j[0] ?? { ok: false, erreur: 'Réponse vide' }) : j;
+  } catch (e) {
+    const nom = e instanceof Error ? e.name : '';
+    return { ok: false, erreur: nom === 'TimeoutError' ? 'Délai dépassé — l’extraction est peut-être encore en cours côté ORTHOP.' : 'Serveur indisponible.' };
+  }
+}
+/**
+ * Envoie le SMS et le mail de relance à une patiente, SANS passer d'appel.
+ * Sert aux dossiers injoignables : après plusieurs tentatives infructueuses, le SMS et le
+ * mail restent les seuls canaux. Rien n'est envoyé automatiquement — uniquement sur clic.
+ * Les numéros fixes sont écartés côté serveur (ils ne peuvent pas recevoir de SMS).
+ */
+async function sendRelance(token: string, id: number): Promise<{ ok: boolean; sms?: string; mail?: string; erreur?: string }> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/dashboard-send-relance`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!r.ok) return { ok: false, erreur: `Le serveur a répondu ${r.status}` };
+    const j = await r.json();
+    return Array.isArray(j) ? (j[0] ?? { ok: false, erreur: 'Réponse vide' }) : j;
+  } catch { return { ok: false, erreur: 'Serveur indisponible.' }; }
 }
 async function triggerOutboundCall(token: string, relance: Relance): Promise<{ ok: boolean; conversation_id?: string }> {
   try { const r = await fetch(`${API_BASE}/webhook/dashboard-trigger-call`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: relance.id, telephone: relance.telephone, nom: relance.nom, prenom: relance.prenom, date_echeance: relance.date_echeance, date_debut_location: relance.date_debut_location }), signal: AbortSignal.timeout(15000) }); return r.json(); } catch { return { ok: false }; }
@@ -430,6 +550,92 @@ function parseOrthop(aoa: unknown[][]): EditableRow[] | null {
 }
 const cellInput: React.CSSProperties = { width: '100%', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12.5, outline: 'none', color: 'var(--text)', fontFamily: 'inherit', background: 'white', boxSizing: 'border-box' };
 
+/**
+ * Extraction ORTHOP — remplace le mode opératoire manuel (écran Suivi → Demande de
+ * renouvellement → export Excel → import ici) par un seul bouton.
+ * La date demandée est « Applicable du », qui correspond à J+1 par rapport au champ
+ * « Fin loc. » de l'écran ORTHOP : pour la liste du jour, on prend donc aujourd'hui.
+ */
+function OrthopModal({ token, onClose, onSuccess }: { token: string; onClose: () => void; onSuccess: (n: number) => void }) {
+  // 'sv-SE' donne YYYY-MM-DD ; le fuseau Paris évite le décalage de date en soirée.
+  const aujourdhui = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+  const [date, setDate] = useState(aujourdhui);
+  const [loading, setLoading] = useState(false);
+  const [res, setRes] = useState<OrthopResult | null>(null);
+
+  async function lancer() {
+    setLoading(true); setRes(null);
+    const r = await extractOrthop(token, date);
+    setLoading(false); setRes(r);
+    if (!r.erreur) onSuccess(r.inseres ?? 0);
+  }
+
+  const ligne = (label: string, valeur: React.ReactNode, fort = false) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '5px 0', borderBottom: '1px solid #f1f5f9' }}>
+      <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{label}</span>
+      <span style={{ fontSize: fort ? 16 : 13, fontWeight: fort ? 800 : 600, color: fort ? '#047857' : 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>{valeur}</span>
+    </div>
+  );
+
+  return (
+    <Portal>
+      <div className="panel-overlay animate-fade-in" onClick={loading ? undefined : onClose} />
+      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 26, width: 480, maxHeight: '88vh', overflow: 'auto', zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--text)', margin: 0 }}>Extraire depuis ORTHOP</h2>
+          {!loading && <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>}
+        </div>
+        <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 18px', lineHeight: 1.5 }}>
+          Récupère directement la liste des renouvellements, sans export Excel. Les patientes déjà présentes ne sont jamais ajoutées deux fois.
+        </p>
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', display: 'block', marginBottom: 6 }}>
+          Ordonnances applicables du
+        </label>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} disabled={loading}
+          style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13.5, color: 'var(--text)', boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit' }} />
+        {date === aujourdhui && <p style={{ fontSize: 11.5, color: '#047857', margin: '6px 0 0' }}>✓ Liste du jour</p>}
+
+        {loading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, marginTop: 18 }}>
+            <RefreshCw size={16} style={{ color: '#1d4ed8', animation: 'spin .8s linear infinite', flexShrink: 0 }} />
+            <p style={{ fontSize: 12.5, color: '#1e40af', margin: 0 }}>Interrogation d'ORTHOP… comptez une dizaine de secondes.</p>
+          </div>
+        )}
+
+        {res?.erreur && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginTop: 18 }}>
+            <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0 }}>{res.erreur}</p>
+          </div>
+        )}
+
+        {res && !res.erreur && (
+          <div style={{ marginTop: 18, padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10 }}>
+            {ligne('Dossiers trouvés dans ORTHOP', res.dossiers_trouves ?? '—')}
+            {ligne('Écartés (aucune ligne à renouveler)', res.ecartes_sans_ligne_a_renouveler ?? '—')}
+            {ligne('Éligibles', res.eligibles ?? '—')}
+            {ligne('Déjà dans les relances', res.deja_presents ?? '—')}
+            {ligne('Ajoutés', res.inseres ?? 0, true)}
+            {res.batch_label && <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '10px 0 0' }}>Campagne : <strong>{res.batch_label}</strong></p>}
+            {res.inseres === 0 && (res.eligibles ?? 0) > 0 && (
+              <p style={{ fontSize: 11.5, color: '#b45309', margin: '8px 0 0' }}>Cette liste avait déjà été importée — rien n'a été dupliqué.</p>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={loading}>{res && !res.erreur ? 'Fermer' : 'Annuler'}</button>
+          <button className="btn btn-primary" onClick={lancer} disabled={loading || !date}>
+            {loading ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> : <CloudDownload size={14} />}
+            {loading ? 'Extraction…' : res && !res.erreur ? 'Relancer' : 'Extraire'}
+          </button>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
 function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode: 'import' | 'manual'; onClose: () => void; onSuccess: (n: number) => void }) {
   const [step, setStep] = useState<1 | 2>(mode === 'manual' ? 2 : 1);
   const [rows, setRows] = useState<EditableRow[]>(mode === 'manual' ? [newRow()] : []);
@@ -473,7 +679,7 @@ function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode:
     if (res.ok) onSuccess(res.inserted ?? valid.length); else setError('Erreur. Réessayez.');
   }
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 28, width: step === 2 ? 720 : 580, maxHeight: '88vh', overflow: 'auto', zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
@@ -546,7 +752,7 @@ function ImportModal({ token, mode, onClose, onSuccess }: { token: string; mode:
           </>
         )}
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -565,7 +771,7 @@ function EditModal({ relance, token, onClose, onSaved }: { relance: Relance; tok
     if (ok) onSaved({ statut, notes: notes || null, resultat: resultat || null, nb_tentatives: nb }); else setError('Erreur. Réessayez.');
   }
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 28, width: 480, zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
@@ -610,7 +816,7 @@ function EditModal({ relance, token, onClose, onSaved }: { relance: Relance; tok
           </button>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -623,7 +829,7 @@ function TranscriptPanel({ relance, onClose }: { relance: Relance; onClose: () =
     if (main) { main.style.overflow = 'hidden'; return () => { main.style.overflow = 'auto'; }; }
   }, []);
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} style={{ zIndex: 1000 }} />
       <div style={{ position: 'fixed', top: 20, right: 16, maxHeight: '75vh', width: 460, background: 'white', zIndex: 1001, boxShadow: '0 8px 40px rgba(0,0,0,.18)', borderRadius: 16, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideInRight .25s ease' }}>
         <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -656,7 +862,7 @@ function TranscriptPanel({ relance, onClose }: { relance: Relance; onClose: () =
           ))}
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -673,7 +879,7 @@ function HistoryPanel({ telephone, token, onClose }: { telephone: string; token:
     if (main) { main.style.overflow = 'hidden'; return () => { main.style.overflow = 'auto'; }; }
   }, []);
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} style={{ zIndex: 1000 }} />
       <div style={{ position: 'fixed', top: 20, right: 16, maxHeight: '75vh', width: 440, background: 'white', zIndex: 1001, boxShadow: '0 8px 40px rgba(0,0,0,.18)', borderRadius: 16, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideInRight .25s ease' }}>
         <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -729,7 +935,7 @@ function HistoryPanel({ telephone, token, onClose }: { telephone: string; token:
       {transcriptEntry && (
         <TranscriptPanel relance={transcriptEntry} onClose={() => setTranscriptEntry(null)} />
       )}
-    </>
+    </Portal>
   );
 }
 
@@ -738,7 +944,7 @@ interface BatchState { done: number; total: number; currentName: string; errors:
 function BatchModal({ batch, onClose, onCancel }: { batch: BatchState; onClose: () => void; onCancel: () => void }) {
   const pct = batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0;
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" style={{ zIndex: 1000 }} />
       <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 28, width: 440, zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
@@ -777,7 +983,7 @@ function BatchModal({ batch, onClose, onCancel }: { batch: BatchState; onClose: 
           {batch.finished && <button className="btn btn-primary" onClick={onClose}><CheckCircle size={13} /> Fermer</button>}
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -1142,14 +1348,19 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [activeTab, setActiveTab]           = useState<'relances' | 'campagnes'>('relances');
   const [showImport, setShowImport]         = useState(false);
   const [showManual, setShowManual]         = useState(false);
+  const [showOrthop, setShowOrthop]         = useState(false);
   const [editTarget, setEditTarget]         = useState<Relance | null>(null);
   const [filterStatut, setFilterStatut]     = useState('');
   const [vue, setVue]                       = useState<VueFiltre>('a_traiter');
+  // Date observée par le bandeau d'activité — par défaut aujourd'hui (heure de Paris).
+  const [jourFiltre, setJourFiltre]         = useState(() => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }));
   const [search, setSearch]                 = useState('');
   const [sortByPriority, setSortByPriority] = useState(false);
   const [successMsg, setSuccessMsg]         = useState('');
   const [callMsg, setCallMsg]               = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [callingId, setCallingId]           = useState<number | null>(null);
+  const [sendingId, setSendingId]           = useState<number | null>(null);
+  const [bulkSend, setBulkSend]             = useState<{ total: number; done: number; sms: number; mail: number; echecs: number } | null>(null);
   // Batch calling
   const [selected, setSelected]             = useState<Set<number>>(new Set());
   const [batchSize, setBatchSize]           = useState(10);
@@ -1173,9 +1384,29 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
 
   useEffect(() => { load(); }, [load]);
 
-  const today = new Date().toDateString();
+  // Le bandeau d'activité porte sur la date choisie (par défaut aujourd'hui).
+  const aujourdhuiIso = new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
   const vueMatch = (VUES.find(v => v.id === vue) ?? VUES[0]).match;
-  const filtered = relances
+
+  /**
+   * PÉRIMÈTRE DE L'ÉCRAN : la journée choisie, au sens de la DATE DU DERNIER APPEL —
+   * « ce qui a été fait ce jour-là ». Tout en découle : compteurs du bandeau, pastilles de
+   * filtre, tableau et bandeaux d'action.
+   *
+   * ⚠️ Cas des relances JAMAIS appelées : elles n'ont aucune date d'appel. Un cadrage strict
+   * les ferait disparaître de l'écran — donc impossible de lancer une campagne juste après
+   * l'avoir importée. Elles restent visibles sur AUJOURD'HUI uniquement, où elles
+   * représentent le travail en cours ; sur une date passée, l'écran ne montre que ce qui a
+   * réellement été fait ce jour-là.
+   *
+   * `jourFiltre` vide = aucune restriction de date (bouton « toutes dates »).
+   */
+  const scope = !jourFiltre ? relances : relances.filter(r => {
+    const jour = jourLocal(r.dernier_appel);
+    return jour ? jour === jourFiltre : jourFiltre === aujourdhuiIso;
+  });
+
+  const filtered = scope
     // La barre de filtres rapides pilote la liste ; le menu « Statut » affine en plus (ET).
     .filter(vueMatch)
     .filter(r => !filterStatut || r.statut === filterStatut)
@@ -1192,10 +1423,11 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const repondus = stats.repondu_sms + stats.repondu_transfert;
   const tauxRappel = stats.total > 0 ? Math.round((repondus / stats.total) * 100) : 0;
 
-  // Activité du jour — alimente le bandeau « Aujourd'hui » (piloter une campagne en cours).
-  const duJour = relances.filter(r => r.dernier_appel && new Date(r.dernier_appel).toDateString() === today);
+  // Activité de la journée affichée. « appelées » exclut les relances jamais tentées
+  // (visibles sur aujourd'hui au titre du travail restant, mais pas comptees comme faites).
+  const duJour = scope;
   const jour = {
-    appeles:    duJour.length,
+    appeles:    duJour.filter(r => (r.nb_tentatives ?? 0) > 0).length,
     repondu:    duJour.filter(r => r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert').length,
     messagerie: duJour.filter(r => r.statut === 'Répondeur').length,
     raccroche:  duJour.filter(r => r.statut === 'Raccroché').length,
@@ -1206,12 +1438,17 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     // la détection EL échoue et qu'il ne récite pas le message lui-même.
     vocalManquant: duJour.filter(r => r.vocal_statut === 'non_depose').length,
   };
-  // Clics sur les liens du mail — pas limité au jour : le clic arrive souvent plus tard que l'appel.
-  const mailsCliques = relances.filter(r => r.email_statut === 'clique').length;
-  // Bandeaux d'action : n'apparaissent que s'il y a réellement quelque chose à faire.
-  const aVerifier = relances.filter(r => r.ordonnance_deja_envoyee);
-  const enEchec   = relances.filter(r => r.echec_motif);
+  // Clics sur les liens du mail, parmi les patientes appelées ce jour-là. Le clic arrive
+  // souvent plusieurs jours après l'appel : on compte donc la COHORTE du jour, quelle que
+  // soit la date du clic — « sur les 163 appelées ce jour-là, 61 ont cliqué depuis ».
+  const mailsCliques = duJour.filter(r => r.email_statut === 'clique').length;
+  // Bandeaux d'action : n'apparaissent que s'il y a réellement quelque chose à faire,
+  // et uniquement sur le périmètre de la journée affichée.
+  const aVerifier = scope.filter(r => r.ordonnance_deja_envoyee);
+  const enEchec   = scope.filter(r => r.echec_motif);
   const batchCandidates = filtered.filter(r => selected.has(r.id) && r.telephone && r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert');
+  // Envoi SMS + mail : toute ligne selectionnee disposant d'au moins un canal.
+  const sendCandidates  = filtered.filter(r => selected.has(r.id) && (r.email || r.telephone));
 
   function toggleSelect(id: number) { setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   // Sélectionne TOUTES les lignes affichées (filtrées). Sert à l'appel en lot (re-filtré
@@ -1283,6 +1520,58 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   }
 
   // « Marquer vérifié » : l'équipe a contrôlé le dossier → on lève le flag ordonnance_deja_envoyee.
+  /**
+   * Envoi SMS + mail en lot sur la sélection. Concurrence volontairement basse (4) :
+   * chaque envoi déclenche deux appels API Brevo, inutile de les saturer — et une
+   * centaine de lignes passe malgré tout en moins d'une minute.
+   */
+  async function sendBulk() {
+    const cibles = filtered.filter(r => selected.has(r.id) && (r.email || r.telephone));
+    if (!cibles.length) return;
+    setBulkSend({ total: cibles.length, done: 0, sms: 0, mail: 0, echecs: 0 });
+    let i = 0, sms = 0, mail = 0, echecs = 0, done = 0;
+    const worker = async () => {
+      while (i < cibles.length) {
+        const r = cibles[i++];
+        const res = await sendRelance(user.token, r.id);
+        if (!res.ok) echecs++;
+        else {
+          if (res.sms === 'envoye') sms++;
+          if (res.mail === 'envoye') mail++;
+          if (res.sms === 'echec_envoi' || res.mail === 'echec_envoi') echecs++;
+        }
+        done++;
+        setBulkSend({ total: cibles.length, done, sms, mail, echecs });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, cibles.length) }, worker));
+    setBulkSend(null);
+    clearSelect();
+    setCallMsg({
+      type: echecs ? 'error' : 'success',
+      text: `${done} relance(s) traitée(s) : ${sms} SMS, ${mail} mail(s)` + (echecs ? `, ${echecs} échec(s).` : '.'),
+    });
+    load();
+  }
+
+  // Envoi manuel du SMS + mail, sans appel. Utile après plusieurs tentatives infructueuses.
+  async function handleSend(r: Relance) {
+    setSendingId(r.id);
+    const res = await sendRelance(user.token, r.id);
+    setSendingId(null);
+    if (!res.ok) { setCallMsg({ type: 'error', text: res.erreur || 'Envoi impossible.' }); return; }
+    const parts: string[] = [];
+    if (res.sms === 'envoye') parts.push('SMS envoyé');
+    else if (res.sms === 'echec_envoi') parts.push('SMS refusé par Brevo');
+    else if (res.sms === 'non_applicable') parts.push('pas de SMS (numéro fixe)');
+    if (res.mail === 'envoye') parts.push('mail envoyé');
+    else if (res.mail === 'echec_envoi') parts.push('mail refusé par Brevo');
+    else if (res.mail === 'non_applicable') parts.push('pas de mail (adresse absente)');
+    const echec = res.sms === 'echec_envoi' || res.mail === 'echec_envoi';
+    setCallMsg({ type: echec ? 'error' : 'success', text: `${r.prenom || ''} ${r.nom || ''}`.trim() + ' : ' + parts.join(', ') + '.' });
+    load();
+  }
+
   async function markOrdoVerified(r: Relance) {
     const ok = await updateRelance(user.token, r.id, { ordonnance_deja_envoyee: false });
     if (ok) setRelances(prev => prev.map(x => x.id === r.id ? { ...x, ordonnance_deja_envoyee: false } : x));
@@ -1347,8 +1636,11 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           <button onClick={() => setShowManual(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
             + Ajouter
           </button>
-          <button className="btn btn-primary" onClick={() => setShowImport(true)}>
+          <button onClick={() => setShowImport(true)} title="Importer un fichier Excel exporté depuis ORTHOP" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
             <Upload size={14} /> Importer Excel
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowOrthop(true)} title="Récupérer la liste directement depuis ORTHOP, sans export Excel">
+            <CloudDownload size={14} /> Extraire depuis ORTHOP
           </button>
         </div>
       </div>
@@ -1409,7 +1701,31 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <>
           {/* ── Aujourd'hui : une seule ligne pour piloter la campagne en cours ── */}
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 12, boxShadow: 'var(--shadow-sm)' }}>
-            <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif', marginRight: 18 }}>Aujourd'hui</span>
+            {/* Date observée : par défaut aujourd'hui, modifiable pour revoir une journée passée. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 16, marginRight: 16, borderRight: '1px solid #eef2f6' }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif' }}>
+                {!jourFiltre ? 'Toutes dates' : jourFiltre === aujourdhuiIso ? "Aujourd'hui" : 'Appels du'}
+              </span>
+              <input
+                type="date"
+                value={jourFiltre}
+                onChange={e => setJourFiltre(e.target.value)}
+                title="Journée affichée — date du dernier appel. Les relances jamais appelées restent visibles sur aujourd'hui."
+                style={{ padding: '3px 7px', borderRadius: 7, border: '1px solid var(--border)', fontSize: 11.5, color: 'var(--text)', background: 'white', outline: 'none', fontFamily: 'inherit', cursor: 'pointer' }}
+              />
+              {jourFiltre && jourFiltre !== aujourdhuiIso && (
+                <button onClick={() => setJourFiltre(aujourdhuiIso)} title="Revenir à aujourd'hui"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--blue)', fontSize: 11, fontWeight: 700, padding: 0 }}>
+                  aujourd'hui
+                </button>
+              )}
+              {/* Échappatoire : sans elle, on n'aurait plus accès à l'ensemble des relances. */}
+              <button onClick={() => setJourFiltre(jourFiltre ? '' : aujourdhuiIso)}
+                title={jourFiltre ? 'Afficher toutes les relances, sans filtre de date' : 'Revenir à une seule journée'}
+                style={{ background: !jourFiltre ? '#eef2ff' : 'none', border: !jourFiltre ? '1px solid #c7d2fe' : '1px solid var(--border)', borderRadius: 7, cursor: 'pointer', color: !jourFiltre ? '#4338ca' : 'var(--muted)', fontSize: 10.5, fontWeight: 700, padding: '3px 8px' }}>
+                {jourFiltre ? 'toutes dates' : 'une journée'}
+              </button>
+            </div>
             {/* Chaque compteur est cliquable : il applique le filtre correspondant au tableau. */}
             {([
               { label: 'appelées',      value: jour.appeles,    color: '#334155', vue: 'tout' as VueFiltre,          statut: '' },
@@ -1445,13 +1761,16 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
               <span style={{ fontSize: 11.5, color: '#64748b', textDecoration: 'underline', textDecorationColor: '#e2e8f0', textUnderlineOffset: 3 }}>mails cliqués</span>
             </button>
             <div style={{ flex: 1, minWidth: 12 }} />
-            <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>{stats.total} relances · {tauxRappel}% résolues</span>
+            <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+              {scope.length} relance{scope.length !== 1 ? 's' : ''}{jourFiltre ? ' ce jour' : ''}
+              {!jourFiltre && ` · ${tauxRappel}% résolues`}
+            </span>
           </div>
 
           {/* ── Filtres rapides : remplacent les cartes KPI et l'onglet « Suivi » ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
             {VUES.map(v => {
-              const n = relances.filter(v.match).length;
+              const n = scope.filter(v.match).length;   // comptes sur la journée affichée
               const active = vue === v.id;
               const alerte = !!v.alerte && n > 0;
               return (
@@ -1533,6 +1852,14 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 </div>
                 <button onClick={runBatch} disabled={batchCandidates.length === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
                   <Play size={11} /> Appeler {batchCandidates.length} (≤{batchSize} actifs)
+                </button>
+                {/* Envoi SMS + mail en lot, sans appel. */}
+                <button onClick={sendBulk} disabled={!!bulkSend || sendCandidates.length === 0}
+                  title="Envoyer le SMS et le mail de relance aux lignes sélectionnées, sans passer d'appel"
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: bulkSend ? '#fffbeb' : 'white', border: `1px solid ${bulkSend ? '#fde68a' : '#c7d2fe'}`, borderRadius: 7, fontSize: 12, fontWeight: 700, color: bulkSend ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: sendCandidates.length === 0 ? 0.4 : 1 }}>
+                  {bulkSend
+                    ? <><RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> {bulkSend.done}/{bulkSend.total}</>
+                    : <><Send size={11} /> SMS + mail ({sendCandidates.length})</>}
                 </button>
                 {bulkDel === 'confirm' ? (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1708,6 +2035,15 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                                 {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
                                 {callingId === r.id ? '…' : 'Appeler'}
                               </button>
+                              {/* Envoi SMS + mail sans appel — pour les dossiers injoignables. */}
+                              <button
+                                onClick={() => handleSend(r)}
+                                disabled={sendingId === r.id || (!r.email && !r.telephone)}
+                                title={`Envoyer le SMS et le mail de relance à ${r.prenom || ''} ${r.nom || ''}`.trim() + ' — sans passer d’appel'}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 9px', background: sendingId === r.id ? '#fffbeb' : 'white', border: `1px solid ${sendingId === r.id ? '#fde68a' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, fontWeight: 600, color: sendingId === r.id ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: (!r.email && !r.telephone) ? 0.3 : 1, whiteSpace: 'nowrap' }}
+                              >
+                                {sendingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Send size={11} />}
+                              </button>
                               <button onClick={() => setEditTarget(r)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '5px 8px', background: 'white', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 11.5, fontWeight: 500, color: '#64748b', cursor: 'pointer' }}>
                                 <Edit2 size={11} />
                               </button>
@@ -1739,6 +2075,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       {/* ── Modals & Panels ───────────────────────────────────────────────────── */}
       {showImport && <ImportModal token={user.token} mode="import" onClose={() => setShowImport(false)} onSuccess={n => { setShowImport(false); setSuccessMsg(`${n} ligne(s) importée(s).`); load(); }} />}
       {showManual && <ImportModal token={user.token} mode="manual" onClose={() => setShowManual(false)} onSuccess={n => { setShowManual(false); setSuccessMsg(`${n} ligne(s) ajoutée(s).`); load(); }} />}
+      {/* La fenêtre reste ouverte après l'extraction pour afficher le compte-rendu ;
+          on recharge la liste en arrière-plan sans la fermer. */}
+      {showOrthop && <OrthopModal token={user.token} onClose={() => setShowOrthop(false)} onSuccess={n => { if (n > 0) setSuccessMsg(`${n} relance(s) ajoutée(s) depuis ORTHOP.`); load(); }} />}
       {editTarget && <EditModal relance={editTarget} token={user.token} onClose={() => setEditTarget(null)} onSaved={u => handleEditSaved(editTarget.id, u)} />}
       {transcriptTarget && <TranscriptPanel relance={transcriptTarget} onClose={() => setTranscriptTarget(null)} />}
       {historyPhone && <HistoryPanel telephone={historyPhone} token={user.token} onClose={() => setHistoryPhone(null)} />}

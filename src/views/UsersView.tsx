@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { UserPlus, Pencil, UserX, ShieldCheck, User as UserIcon, RefreshCw, X, Eye, EyeOff, Users, Plus, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import type { AuthUser, DashboardUser } from '../types';
 
@@ -26,6 +28,16 @@ interface UserFormData {
   email: string;
   role: 'admin' | 'conseillere' | 'recouvrement';
   password: string;
+}
+
+/**
+ * Rend les overlays directement dans <body> — explication détaillée dans
+ * RecouvrementView.tsx. En résumé : un ancêtre porteur d'un `transform` (les animations
+ * `fadeUp` des vues) devient le bloc conteneur des éléments `position: fixed`, qui se
+ * retrouvent alors positionnés par rapport à la page et non à l'écran.
+ */
+function Portal({ children }: { children: ReactNode }) {
+  return createPortal(children, document.body);
 }
 
 function UserModal({
@@ -62,7 +74,7 @@ function UserModal({
   };
 
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div className="modal-dialog animate-fade-up" style={{ zIndex: 60 }}>
         {/* Header */}
@@ -140,7 +152,7 @@ function UserModal({
           </button>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -150,7 +162,7 @@ function ConfirmModal({ user, onConfirm, onClose, saving }: {
   user: DashboardUser; onConfirm: () => void; onClose: () => void; saving: boolean;
 }) {
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div className="modal-dialog animate-fade-up" style={{ zIndex: 60, maxWidth: 380 }}>
         <div style={{ textAlign: 'center', padding: '8px 0 20px' }}>
@@ -175,7 +187,7 @@ function ConfirmModal({ user, onConfirm, onClose, saving }: {
           </button>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -263,7 +275,7 @@ function BulkImportModal({
   const errCount   = rows.filter(r => r.status === 'error').length;
 
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={!running ? onClose : undefined} />
       <div
         className="modal-dialog animate-fade-up"
@@ -449,7 +461,7 @@ function BulkImportModal({
           </div>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 

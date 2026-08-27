@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement,
@@ -50,6 +51,16 @@ const CALLBACK_LABELS: Record<string, string> = {
 };
 
 // ─── Phone helper ────────────────────────────────────────────────────────────
+
+/**
+ * Rend les overlays directement dans <body> — explication détaillée dans
+ * RecouvrementView.tsx. En résumé : un ancêtre porteur d'un `transform` (les animations
+ * `fadeUp` des vues) devient le bloc conteneur des éléments `position: fixed`, qui se
+ * retrouvent alors positionnés par rapport à la page et non à l'écran.
+ */
+function Portal({ children }: { children: React.ReactNode }) {
+  return createPortal(children, document.body);
+}
 
 function PhoneLink({ phone }: { phone?: string | number }) {
   if (!phone) return <span style={{ color: 'var(--muted)', fontSize: 13 }}>—</span>;
@@ -140,7 +151,7 @@ function TranscriptPanel({ call, onClose }: { call: RecentCall; onClose: () => v
   const lines = call.transcript ? parseTranscript(call.transcript) : [];
 
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div className="panel animate-slide-in">
         {/* Header */}
@@ -240,7 +251,7 @@ function TranscriptPanel({ call, onClose }: { call: RecentCall; onClose: () => v
           )}
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -424,7 +435,7 @@ function PatientTimelinePanel({
   const hasUrgent = matchingRappels.some(r => r.priorite === 'URGENT' && r.statut !== 'DONE');
 
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div className="panel animate-slide-in" style={{ zIndex: 60 }}>
         {/* Header */}
@@ -568,7 +579,7 @@ function PatientTimelinePanel({
           )}
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -694,7 +705,7 @@ function AnomalieTraitementModal({
   };
 
   return (
-    <>
+    <Portal>
       <div className="panel-overlay animate-fade-in" onClick={onClose} />
       <div style={{
         position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
@@ -840,7 +851,7 @@ function AnomalieTraitementModal({
           </div>
         </div>
       </div>
-    </>
+    </Portal>
   );
 }
 
@@ -2699,7 +2710,7 @@ export default function App() {
               <span style={{ fontSize: 12, fontWeight: 600, color: '#16a34a' }}>Amélie active</span>
             </div>
             <p style={{ fontSize: 11, color: 'var(--muted)', display: 'flex', alignItems: 'center' }}>
-              Mis à jour · {lastRefresh.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+              Mis à jour · {lastRefresh.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' })}
               <span className="auto-refresh-dot" title="Actualisation auto toutes les 30s" />
             </p>
           </div>
@@ -2718,7 +2729,7 @@ export default function App() {
               {titleMap[view]}
             </h1>
             <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}>
-              {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' })}
             </p>
           </div>
           <button onClick={handleRefresh} className="btn btn-ghost">
