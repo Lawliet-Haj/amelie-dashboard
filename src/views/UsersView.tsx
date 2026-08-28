@@ -1,8 +1,7 @@
-import type { ReactNode } from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { UserPlus, Pencil, UserX, ShieldCheck, User as UserIcon, RefreshCw, X, Eye, EyeOff, Users, Plus, Trash2, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import type { AuthUser, DashboardUser } from '../types';
+import { Portal } from '../lib/Portal';
 
 const API = 'https://n8n.srv778935.hstgr.cloud/webhook/dashboard-users';
 
@@ -28,16 +27,6 @@ interface UserFormData {
   email: string;
   role: 'admin' | 'conseillere' | 'recouvrement';
   password: string;
-}
-
-/**
- * Rend les overlays directement dans <body> — explication détaillée dans
- * RecouvrementView.tsx. En résumé : un ancêtre porteur d'un `transform` (les animations
- * `fadeUp` des vues) devient le bloc conteneur des éléments `position: fixed`, qui se
- * retrouvent alors positionnés par rapport à la page et non à l'écran.
- */
-function Portal({ children }: { children: ReactNode }) {
-  return createPortal(children, document.body);
 }
 
 function UserModal({
@@ -109,6 +98,7 @@ function UserModal({
             <select style={{ ...inputCls, cursor: 'pointer' }} value={form.role} onChange={set('role')}>
               <option value="conseillere">Conseillère</option>
               <option value="recouvrement">Recouvrement</option>
+              <option value="facturation">Facturation</option>
               <option value="admin">Administrateur</option>
             </select>
           </div>
@@ -371,6 +361,7 @@ function BulkImportModal({
                 >
                   <option value="conseillere">Conseillère</option>
                   <option value="recouvrement">Recouvrement</option>
+                  <option value="facturation">Facturation</option>
                   <option value="admin">Admin</option>
                 </select>
                 {/* Password */}
@@ -643,6 +634,8 @@ export function UsersView({ currentUser }: { currentUser: AuthUser }) {
                             ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
                             : u.role === 'recouvrement'
                             ? 'linear-gradient(135deg,#d97706,#b45309)'
+                            : u.role === 'facturation'
+                            ? 'linear-gradient(135deg,#0d9488,#0f766e)'
                             : 'linear-gradient(135deg,#2d7fc2,#1a5ea0)',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                           fontSize: 12, fontWeight: 800, color: 'white',
@@ -675,6 +668,10 @@ export function UsersView({ currentUser }: { currentUser: AuthUser }) {
                       ) : u.role === 'recouvrement' ? (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#fef3c7', color: '#b45309', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
                           💼 Recouvrement
+                        </span>
+                      ) : u.role === 'facturation' ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#ccfbf1', color: '#0f766e', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
+                          🧾 Facturation
                         </span>
                       ) : (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: 'var(--blue-light)', color: 'var(--blue-dark)', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>

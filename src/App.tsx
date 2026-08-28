@@ -1,5 +1,4 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, BarElement,
@@ -9,13 +8,15 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Phone, AlertTriangle, Clock, Bell, RefreshCw,
   BarChart2, PhoneCall, X, MessageSquare, CheckCircle,
-  Circle, Filter, History, Users, LogOut, Search, Briefcase,
+  Circle, Filter, History, Users, LogOut, Search, Briefcase, Receipt,
 } from 'lucide-react';
 import { useData } from './hooks/useData';
 import { useAuth } from './hooks/useAuth';
 import { UsersView } from './views/UsersView';
 import { RecouvrementView } from './views/RecouvrementView';
+import { FacturationView } from './views/FacturationView';
 import type { Rappel, RecentCall } from './types';
+import { Portal } from './lib/Portal';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
 
@@ -51,16 +52,6 @@ const CALLBACK_LABELS: Record<string, string> = {
 };
 
 // ─── Phone helper ────────────────────────────────────────────────────────────
-
-/**
- * Rend les overlays directement dans <body> — explication détaillée dans
- * RecouvrementView.tsx. En résumé : un ancêtre porteur d'un `transform` (les animations
- * `fadeUp` des vues) devient le bloc conteneur des éléments `position: fixed`, qui se
- * retrouvent alors positionnés par rapport à la page et non à l'écran.
- */
-function Portal({ children }: { children: React.ReactNode }) {
-  return createPortal(children, document.body);
-}
 
 function PhoneLink({ phone }: { phone?: string | number }) {
   if (!phone) return <span style={{ color: 'var(--muted)', fontSize: 13 }}>—</span>;
@@ -2496,7 +2487,7 @@ function AnomaliesView({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvrement';
+type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvrement' | 'facturation';
 
 export default function App() {
   const { user, login, logout }       = useAuth();
@@ -2506,6 +2497,7 @@ export default function App() {
   // Redirect recouvrement role to their view on login
   useEffect(() => {
     if (user?.role === 'recouvrement') setView('recouvrement');
+    if (user?.role === 'facturation')  setView('facturation');
   }, [user?.role]);
   const [refreshing, setRefreshing]   = useState(false);
   const [timelinePhone, setTimelinePhone] = useState<string | null>(null);
@@ -2552,6 +2544,7 @@ export default function App() {
     { id: 'rappels',      label: 'Rappels',           icon: Bell,          visibleRoles: ['admin', 'conseillere'] },
     { id: 'anomalies',    label: 'Anomalies',         icon: AlertTriangle, visibleRoles: ['admin', 'conseillere'] },
     { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement'] },
+    { id: 'facturation',  label: 'Facturation',        icon: Receipt,       visibleRoles: ['admin', 'recouvrement', 'facturation'] },
     { id: 'users',        label: 'Utilisateurs',      icon: Users,         visibleRoles: ['admin'] },
   ];
 
@@ -2561,6 +2554,7 @@ export default function App() {
     rappels:      'Rappels',
     anomalies:    'Anomalies',
     recouvrement: 'Recouvrement',
+    facturation:  'Facturation',
     users:        'Utilisateurs',
   };
 
@@ -2680,6 +2674,8 @@ export default function App() {
                 ? 'linear-gradient(135deg,#6366f1,#4f46e5)'
                 : user.role === 'recouvrement'
                   ? 'linear-gradient(135deg,#d97706,#b45309)'
+                  : user.role === 'facturation'
+                    ? 'linear-gradient(135deg,#0d9488,#0f766e)'
                   : 'linear-gradient(135deg,#2d7fc2,#1a5ea0)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 13, fontWeight: 800, color: 'white', fontFamily: 'Lexend,sans-serif',
@@ -2691,7 +2687,10 @@ export default function App() {
                 {user.nom}
               </div>
               <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
-                {user.role === 'admin' ? '🛡 Admin' : user.role === 'recouvrement' ? '💼 Recouvrement' : '👤 Conseillère'}
+                {user.role === 'admin' ? '🛡 Admin'
+                  : user.role === 'recouvrement' ? '💼 Recouvrement'
+                  : user.role === 'facturation' ? '🧾 Facturation'
+                  : '👤 Conseillère'}
               </div>
             </div>
             <button
@@ -2732,15 +2731,25 @@ export default function App() {
               {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' })}
             </p>
           </div>
-          <button onClick={handleRefresh} className="btn btn-ghost">
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
-            Actualiser
-          </button>
+          {/*
+            Masqué sur Facturation : ce bouton rafraîchit les données de l'entrant
+            (`useData`), dont cette vue ne se sert pas — il aurait donc l'air de faire
+            quelque chose sans rien faire, à côté du bouton « Actualiser » de la vue.
+            Recouvrement a la même particularité, laissée en place pour l'instant.
+          */}
+          {view !== 'facturation' && (
+            <button onClick={handleRefresh} className="btn btn-ghost">
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              Actualiser
+            </button>
+          )}
         </div>
 
         {/* Content */}
         {view === 'recouvrement' ? (
           <RecouvrementView user={user} />
+        ) : view === 'facturation' ? (
+          <FacturationView user={user} />
         ) : loading && !data ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',

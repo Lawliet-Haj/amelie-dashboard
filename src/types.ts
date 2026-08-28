@@ -49,7 +49,7 @@ export interface AuthUser {
   token: string;
   username: string;
   nom: string;
-  role: 'admin' | 'conseillere' | 'recouvrement';
+  role: 'admin' | 'conseillere' | 'recouvrement' | 'facturation';
 }
 
 export interface DashboardUser {
@@ -57,7 +57,7 @@ export interface DashboardUser {
   username: string;
   nom: string;
   email: string;
-  role: 'admin' | 'conseillere' | 'recouvrement';
+  role: 'admin' | 'conseillere' | 'recouvrement' | 'facturation';
   actif: boolean;
   created_at: string;
   last_login: string;
@@ -152,4 +152,64 @@ export interface DashboardData {
   actions: ActionItem[];
   rappels: Rappel[];
   recent_calls: RecentCall[];
+}
+
+// ─── Facturation : relances préventives par SMS avant échéance ────────────────
+// Table PostgreSQL `facturation`, volontairement DISTINCTE de `relances` : l'index unique
+// de `relances` porte sur `orthop_prescription` seul, donc y insérer un palier J-30
+// bloquerait ensuite le J-15 ET l'extraction recouvrement du jour J, en silence.
+// Ici la clé de déduplication est (orthop_prescription, palier).
+
+/** J-30 et J-15 sont deux paliers distincts : le message envoyé n'est pas le même. */
+export type Palier = 'J30' | 'J15';
+
+export interface Facturation {
+  id: number;
+  palier: Palier;
+  nom: string | null;
+  prenom: string | null;
+  telephone: string | null;
+  email: string | null;
+  /** « Applicable du » visée par le palier — la date d'échéance de l'ordonnance. */
+  date_echeance: string | null;
+  /** Suivi d'envoi. NULL pour l'instant : l'envoi de SMS n'est pas encore branché. */
+  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | null;
+  sms_le?: string | null;
+  sms_message_id?: string | null;
+  batch_id?: string | null;
+  batch_label?: string | null;
+  orthop_prescription?: string | null;
+  orthop_dossier?: string | null;
+  orthop_benef?: string | null;
+  importe_le?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PalierStats {
+  total: number;
+  a_envoyer: number;
+  envoye: number;
+  livre: number;
+  echec: number;
+}
+
+export interface FacturationStats extends PalierStats {
+  j30: PalierStats;
+  j15: PalierStats;
+}
+
+/** Un lot = une extraction (équivalent des campagnes du recouvrement). */
+export interface FacturationLot extends PalierStats {
+  batch_id: string;
+  batch_label: string | null;
+  palier: Palier;
+  date_echeance: string | null;
+  date_import: string;
+}
+
+export interface FacturationData {
+  ok: boolean;
+  facturations: Facturation[];
+  stats: FacturationStats;
+  lots: FacturationLot[];
 }

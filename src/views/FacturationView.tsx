@@ -1,0 +1,1017 @@
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  RefreshCw, AlertCircle, CloudDownload, Eye, X, Search, Download,
+  CalendarClock, MessageSquare, CheckCircle, Layers, Mail, Phone, Send,
+} from 'lucide-react';
+import type { AuthUser, Facturation, FacturationData, FacturationLot, Palier } from '../types';
+import { Portal } from '../lib/Portal';
+import {
+  aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, isFixe,
+} from '../lib/format';
+import { analyserSms } from '../lib/sms';
+
+const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
+
+/**
+ * Les deux paliers de relance préventive.
+ *
+ * ⚠️ J-30 et J-15 sont STRICTEMENT séparés : le message envoyé ne sera pas le même
+ * (premier avertissement vs rappel rapproché). Ils ont leur propre extraction, leur propre
+ * onglet, leurs propres compteurs, et en base leur propre ligne — la clé de déduplication
+ * `(orthop_prescription, palier)` garantit qu'une patiente peut passer par les deux sans
+ * que l'un n'empêche l'autre.
+ */
+/**
+ * `jours` = nombre de jours entre l'envoi du SMS et la **fin de location**. Les libellés
+ * J-30 / J-15 correspondent donc exactement à cet écart (arrêté avec le client le
+ * 2026-08-28 : le 28/08 vise une fin de location au 27/09).
+ *
+ * ⚠️ Ne pas confondre avec l'« applicable du » interrogé dans ORTHOP, qui vaut toujours
+ * `fin de location + 1 jour` — voir `datesPalier` ci-dessous.
+ *
+ * ⚠️ Décalage FIXE, pas d'arithmétique de mois : avec un décalage fixe et un lancement
+ * quotidien, chaque date de fin de location est visée une fois et une seule.
+ * L'arithmétique de mois créerait doublons et trous (les 29, 30 et 31 janvier tomberaient
+ * tous sur le 28 février).
+ *
+ * Le même écart est codé côté n8n dans `Auth + Params` (`JOURS_PALIER`) : les deux
+ * doivent rester d'accord, et le modal signale un désaccord s'il en survient un.
+ */
+const PALIERS: { id: Palier; label: string; jours: number; teinte: string; bord: string; fond: string; texte: string }[] = [
+  { id: 'J30', label: 'J-30', jours: 30, teinte: '#c2410c', bord: '#fed7aa', fond: '#fff7ed', texte: 'Premier avertissement, 30 jours avant la fin de location.' },
+  { id: 'J15', label: 'J-15', jours: 15, teinte: '#1d4ed8', bord: '#bfdbfe', fond: '#eff6ff', texte: 'Rappel rapproché, 15 jours avant la fin de location.' },
+];
+const palierConf = (p: Palier) => PALIERS.find(x => x.id === p) ?? PALIERS[0];
+
+/**
+ * Deux dates à ne JAMAIS confondre :
+ *
+ *  - **fin de location** = `reference + N jours` — la date annoncée dans le SMS,
+ *    celle que lit la patiente (« votre ordonnance prendra fin le … »).
+ *  - **applicable du**   = `fin de location + 1 jour` — la date interrogée dans ORTHOP,
+ *    et celle stockée dans `facturation.date_echeance`.
+ *
+ * Le décalage vient du champ « Fin loc. » de l'écran ORTHOP, qui donne J+1 : filtrer
+ * Fin loc au 25/08 renvoie les prescriptions applicables du 26/08.
+ *
+ * ⚠️ Le même calcul est fait côté n8n (`Auth + Params`). Les deux doivent concorder —
+ * le modal le vérifie et signale un désaccord plutôt que de le supposer.
+ */
+function datesPalier(reference: string, jours: number) {
+  return { fin: decalerJours(reference, jours), applicable: decalerJours(reference, jours + 1) };
+}
+
+/** Fin de location déduite d'une ligne en base, où `date_echeance` est l'« applicable du ». */
+function finDeLocation(dateEcheance: string | null | undefined): string {
+  return dateEcheance ? decalerJours(dateEcheance, -1) : '';
+}
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+
+interface ExtractResult {
+  ok?: boolean;
+  mode?: 'dry_run' | 'insert' | 'vide';
+  cible?: string;
+  palier?: Palier | null;
+  reference?: string | null;
+  decalage?: number;
+  /** « Applicable du » réellement interrogé dans ORTHOP. */
+  date?: string;
+  /** Fin de location = veille de `date` — c'est elle qui figure dans le SMS. */
+  date_fin?: string | null;
+  jours_palier?: number;
+  batch_id?: string | null;
+  batch_label?: string | null;
+  dossiers_trouves?: number;
+  ecartes_sans_ligne_a_renouveler?: number;
+  eligibles?: number;
+  inseres?: number;
+  deja_presents?: number;
+  apercu?: { nom: string; tel: string; email: string }[];
+  erreur?: string;
+}
+
+/**
+ * Extraction ORTHOP vers la table `facturation`.
+ *
+ * On envoie `reference` (le jour de départ) et non la date visée : c'est n8n qui applique
+ * le décalage du palier. L'écran affiche sa propre prévision à côté du résultat renvoyé —
+ * si les deux divergeaient un jour, ça se verrait immédiatement au lieu de passer inaperçu.
+ * `dry_run` interroge ORTHOP sans rien insérer : c'est le mode de vérification.
+ */
+async function extraireFacturation(token: string, palier: Palier, reference: string, dryRun: boolean): Promise<ExtractResult> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/orthop-extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ cible: 'facturation', palier, reference, dry_run: dryRun }),
+      signal: AbortSignal.timeout(300000),
+    });
+    if (!r.ok) return { erreur: `Le serveur a répondu ${r.status}` };
+    // ⚠️ Corps VIDE avec un statut 200 : c'est la réponse de n8n quand le workflow s'arrête
+    // en cours de route — un refus d'authentification, un palier manquant, ou simplement
+    // AUCUN dossier trouvé (la chaîne se vide alors et le nœud de réponse n'est jamais
+    // atteint). Un 200 n'est donc pas une preuve de succès : on le dit au lieu d'annoncer
+    // faussement un serveur indisponible.
+    const brut = await r.text();
+    if (!brut.trim()) {
+      return { erreur: 'Le serveur a répondu sans contenu. Deux causes possibles : aucun dossier '
+        + 'ORTHOP pour cette date, ou une erreur du workflow. À vérifier dans les exécutions n8n.' };
+    }
+    const j = JSON.parse(brut);
+    const res = Array.isArray(j) ? j[0] : j;
+    if (!res || typeof res !== 'object') return { erreur: 'Réponse inattendue du serveur.' };
+    return res as ExtractResult;
+  } catch (e) {
+    const nom = e instanceof Error ? e.name : '';
+    if (nom === 'TimeoutError') {
+      return { erreur: 'Délai dépassé — l’extraction est peut-être encore en cours côté ORTHOP.' };
+    }
+    if (e instanceof SyntaxError) return { erreur: 'Réponse illisible du serveur (JSON invalide).' };
+    return { erreur: 'Serveur indisponible.' };
+  }
+}
+
+/**
+ * Réponse du workflow d'envoi, en aperçu comme en envoi réel.
+ * `mode` : `apercu` (rien envoyé), `rien_a_envoyer`, ou `envoi`.
+ */
+export interface ResultatEnvoi {
+  ok?: boolean;
+  mode?: 'apercu' | 'rien_a_envoyer' | 'envoi';
+  palier?: Palier | null;
+  cibles_trouvees?: number;
+  a_envoyer?: number;
+  ignores?: number;
+  detail_ignores?: { id: number; raison: string }[];
+  cout_segments?: number;
+  apercu?: { nom: string; tel: string; segments: number; message: string }[];
+  envoyes?: number;
+  echecs?: number;
+  details?: { id: number; tel: string; statut: string; message_id: string | null }[];
+  erreur?: string;
+}
+
+/**
+ * Envoi des SMS d'un palier — ou simple aperçu quand `dryRun` est vrai.
+ *
+ * ⚠️ Le texte du message n'est JAMAIS transmis par le dashboard : il est construit côté
+ * n8n. C'est ce qui garantit qu'un aperçu montre exactement ce qui partira, et qu'on ne
+ * puisse pas faire envoyer un texte arbitraire depuis le navigateur.
+ *
+ * Côté serveur, `sms_statut IS NULL` filtre les cibles : une patiente déjà servie ne peut
+ * pas recevoir deux fois le même palier, même si le bouton est recliqué.
+ */
+async function envoyerSms(token: string, palier: Palier, dryRun: boolean): Promise<ResultatEnvoi> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/facturation-send-sms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ palier, dry_run: dryRun }),
+      signal: AbortSignal.timeout(dryRun ? 30000 : 300000),
+    });
+    if (!r.ok) return { erreur: `Le serveur a répondu ${r.status}` };
+    const brut = await r.text();
+    if (!brut.trim()) {
+      return { erreur: 'Le serveur a répondu sans contenu — à vérifier dans les exécutions n8n.' };
+    }
+    const j = JSON.parse(brut);
+    const res = Array.isArray(j) ? j[0] : j;
+    if (!res || typeof res !== 'object') return { erreur: 'Réponse inattendue du serveur.' };
+    return res as ResultatEnvoi;
+  } catch (e) {
+    const nom = e instanceof Error ? e.name : '';
+    if (nom === 'TimeoutError') {
+      return { erreur: 'Délai dépassé. ⚠️ Des SMS ont peut-être déjà été envoyés — vérifiez la colonne SMS avant de réessayer.' };
+    }
+    if (e instanceof SyntaxError) return { erreur: 'Réponse illisible du serveur (JSON invalide).' };
+    return { erreur: 'Serveur indisponible.' };
+  }
+}
+
+async function chargerFacturation(token: string): Promise<FacturationData | { erreur: string }> {
+  try {
+    const r = await fetch(`${API_BASE}/webhook/dashboard-facturation-data`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!r.ok) return { erreur: `Le serveur a répondu ${r.status}` };
+    const j = await r.json();
+    const d = Array.isArray(j) ? j[0] : j;
+    if (!d || !Array.isArray(d.facturations)) return { erreur: 'Réponse inattendue du serveur.' };
+    return d as FacturationData;
+  } catch { return { erreur: 'Serveur indisponible.' }; }
+}
+
+// ─── Petits composants ────────────────────────────────────────────────────────
+
+function Chip({ texte, couleur, fond, bord }: { texte: string; couleur: string; fond: string; bord: string }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999,
+      fontSize: 11, fontWeight: 700, color: couleur, background: fond, border: `1px solid ${bord}`,
+      whiteSpace: 'nowrap',
+    }}>{texte}</span>
+  );
+}
+
+/** État d'acheminement du SMS. Tout est à `null` tant que l'envoi n'est pas branché. */
+function SmsChip({ f }: { f: Facturation }) {
+  if (isFixe(f.telephone)) return <Chip texte="Fixe · sans SMS" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
+  switch (f.sms_statut) {
+    case 'livre':       return <Chip texte="SMS livré"     couleur="#065f46" fond="#ecfdf5" bord="#6ee7b7" />;
+    case 'envoye':      return <Chip texte="SMS envoyé"    couleur="#1d4ed8" fond="#eff6ff" bord="#bfdbfe" />;
+    case 'echec':
+    case 'echec_envoi': return <Chip texte="SMS non livré" couleur="#b91c1c" fond="#fef2f2" bord="#fecaca" />;
+    default:            return <Chip texte="À envoyer"     couleur="#92400e" fond="#fffbeb" bord="#fde68a" />;
+  }
+}
+
+/**
+ * Aperçu du SMS du palier, avec son coût réel en segments.
+ *
+ * Rien n'est envoyé depuis cet écran — c'est un aperçu, pour valider le texte ET voir
+ * ce qu'il coûte avant de brancher l'envoi. Un SMS est facturé au segment : le même
+ * message peut coûter 1 ou 5 fois le prix selon les caractères employés.
+ */
+function SmsApercu({ texte }: { texte: string | null }) {
+  if (!texte) {
+    return (
+      <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 12px', fontStyle: 'italic' }}>
+        Aperçu du message indisponible (le serveur n'a pas répondu).
+      </p>
+    );
+  }
+  const a = analyserSms(texte);
+  const bon = a.segments === 1;
+  const couleur = bon ? '#065f46' : a.gsm7 ? '#92400e' : '#b91c1c';
+  const fond = bon ? '#ecfdf5' : a.gsm7 ? '#fffbeb' : '#fef2f2';
+  const bord = bon ? '#6ee7b7' : a.gsm7 ? '#fde68a' : '#fecaca';
+  return (
+    <details style={{ marginBottom: 12 }}>
+      <summary style={{ cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', display: 'flex', alignItems: 'center', gap: 8, listStyle: 'none' }}>
+        <MessageSquare size={12} style={{ color: 'var(--muted)' }} />
+        Message qui sera envoyé
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '1px 7px', borderRadius: 999, fontSize: 10.5, fontWeight: 700, color: couleur, background: fond, border: `1px solid ${bord}` }}>
+          {a.segments} segment{a.segments > 1 ? 's' : ''} · {a.unites} car. · {a.gsm7 ? 'GSM-7' : 'UCS-2'}
+        </span>
+      </summary>
+      <p style={{ fontSize: 11.5, color: 'var(--text)', margin: '8px 0 0', padding: '9px 11px', background: 'rgba(255,255,255,.85)', border: '1px solid var(--border)', borderRadius: 8, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+        {texte}
+      </p>
+      {!a.gsm7 && (
+        <p style={{ fontSize: 11, color: '#b91c1c', margin: '6px 0 0', lineHeight: 1.5 }}>
+          ⚠️ Les caractères {a.fautifs.map(c => `« ${c} »`).join(', ')} font basculer le message en
+          UCS-2 : la limite tombe de 160 à 70 caractères par segment.
+        </p>
+      )}
+      {a.gsm7 && !bon && (
+        <p style={{ fontSize: 11, color: '#92400e', margin: '6px 0 0', lineHeight: 1.5 }}>
+          {a.unites - 160} caractère(s) de trop pour un seul segment. Ce message sera facturé {a.segments} fois.
+        </p>
+      )}
+    </details>
+  );
+}
+
+const champStyle: React.CSSProperties = {
+  padding: '8px 11px', borderRadius: 8, border: '1px solid var(--border)',
+  fontSize: 13, color: 'var(--text)', outline: 'none', fontFamily: 'inherit', background: 'white',
+};
+const thStyle: React.CSSProperties = {
+  padding: '8px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700,
+  fontSize: 11, color: 'var(--text)', letterSpacing: '.3px', textTransform: 'uppercase',
+  borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', background: '#f8fafc',
+};
+const tdStyle: React.CSSProperties = {
+  padding: '9px 10px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: 'var(--text)',
+};
+
+// ─── Modal d'extraction ───────────────────────────────────────────────────────
+
+function ExtractionModal({
+  token, palier, reference, onClose, onDone,
+}: {
+  token: string; palier: Palier; reference: string;
+  onClose: () => void; onDone: (n: number, palier: Palier) => void;
+}) {
+  const conf = palierConf(palier);
+  const { fin: finPrevue, applicable: prevu } = datesPalier(reference, conf.jours);
+  const [loading, setLoading] = useState<'apercu' | 'extraction' | null>(null);
+  const [res, setRes] = useState<ExtractResult | null>(null);
+
+  async function lancer(dryRun: boolean) {
+    setLoading(dryRun ? 'apercu' : 'extraction');
+    setRes(null);
+    const r = await extraireFacturation(token, palier, reference, dryRun);
+    setLoading(null);
+    setRes(r);
+    if (!r.erreur && !dryRun) onDone(r.inseres ?? 0, palier);
+  }
+
+  const ligne = (label: string, valeur: React.ReactNode, fort = false) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '5px 0', borderBottom: '1px solid #f1f5f9' }}>
+      <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{label}</span>
+      <span style={{ fontSize: fort ? 16 : 13, fontWeight: fort ? 800 : 600, color: fort ? '#047857' : 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>{valeur}</span>
+    </div>
+  );
+
+  // Le serveur refait le calcul de son côté : on compare, plutôt que de supposer.
+  const desaccord = res && !res.erreur && res.date && res.date !== prevu;
+
+  return (
+    <Portal>
+      <div className="panel-overlay animate-fade-in" onClick={loading ? undefined : onClose} />
+      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 26, width: 500, maxHeight: '88vh', overflow: 'auto', zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--text)', margin: 0 }}>
+            Extraction {conf.label}
+          </h2>
+          {!loading && <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>}
+        </div>
+
+        <div style={{ padding: '12px 14px', background: conf.fond, border: `1px solid ${conf.bord}`, borderRadius: 10, marginBottom: 16 }}>
+          <p style={{ fontSize: 12.5, color: conf.teinte, margin: 0, lineHeight: 1.6 }}>
+            À partir du <strong>{formatDate(reference)}</strong>, plus {conf.jours} jours :<br />
+            fin de location le <strong>{formatDateLongue(finPrevue)}</strong>.
+          </p>
+          <p style={{ fontSize: 11.5, color: conf.teinte, opacity: .85, margin: '6px 0 0', lineHeight: 1.5 }}>
+            Interrogé dans ORTHOP : ordonnances applicables du <strong>{formatDate(prevu)}</strong>, soit le
+            lendemain. C'est ainsi qu'ORTHOP les indexe.
+          </p>
+        </div>
+
+        <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 16px', lineHeight: 1.55 }}>
+          <strong>Aperçu</strong> interroge ORTHOP sans rien enregistrer — à utiliser pour vérifier la liste.
+          <strong> Extraire</strong> enregistre les lignes. Relancer une extraction déjà faite n’ajoute aucun doublon.
+        </p>
+
+        {loading && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 16 }}>
+            <RefreshCw size={16} style={{ color: '#1d4ed8', animation: 'spin .8s linear infinite', flexShrink: 0 }} />
+            <p style={{ fontSize: 12.5, color: '#1e40af', margin: 0 }}>
+              Interrogation d’ORTHOP… comptez une dizaine de secondes pour une centaine de dossiers.
+            </p>
+          </div>
+        )}
+
+        {res?.erreur && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 16 }}>
+            <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0 }}>{res.erreur}</p>
+          </div>
+        )}
+
+        {desaccord && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 16 }}>
+            <AlertCircle size={15} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#92400e', margin: 0 }}>
+              Le serveur a visé le <strong>{formatDate(res.date ?? null)}</strong> alors que cet écran annonçait
+              le <strong>{formatDate(prevu)}</strong>. À signaler — les deux calculs devraient concorder.
+            </p>
+          </div>
+        )}
+
+        {res && !res.erreur && (
+          <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 16 }}>
+            {ligne('Fin de location (date du SMS)', formatDate(res.date_fin ?? null))}
+            {ligne('Applicable du (interrogé)', formatDate(res.date ?? null))}
+            {ligne('Dossiers trouvés dans ORTHOP', res.dossiers_trouves ?? '—')}
+            {ligne('Écartés (aucune ligne à renouveler)', res.ecartes_sans_ligne_a_renouveler ?? '—')}
+            {ligne('Éligibles', res.eligibles ?? '—')}
+            {res.mode === 'dry_run'
+              ? ligne('Enregistrés', 'aucun (aperçu)', true)
+              : <>
+                  {ligne('Déjà en base', res.deja_presents ?? '—')}
+                  {ligne('Ajoutés', res.inseres ?? 0, true)}
+                </>}
+            {res.batch_label && (
+              <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '10px 0 0' }}>Lot : <strong>{res.batch_label}</strong></p>
+            )}
+            {res.mode === 'insert' && res.inseres === 0 && (res.eligibles ?? 0) > 0 && (
+              <p style={{ fontSize: 11.5, color: '#b45309', margin: '8px 0 0' }}>
+                Cette liste avait déjà été extraite — rien n’a été dupliqué.
+              </p>
+            )}
+            {res.apercu && res.apercu.length > 0 && (
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', margin: '0 0 6px', textTransform: 'uppercase', letterSpacing: '.3px' }}>
+                  Premières lignes
+                </p>
+                {res.apercu.map((a, i) => (
+                  <p key={i} style={{ fontSize: 12, color: 'var(--text)', margin: '2px 0' }}>
+                    {a.nom} — {a.tel}{a.email ? ` — ${a.email}` : ''}
+                  </p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={!!loading}>Fermer</button>
+          <button className="btn btn-ghost" onClick={() => lancer(true)} disabled={!!loading}>
+            {loading === 'apercu' ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> : <Eye size={14} />}
+            Aperçu
+          </button>
+          <button className="btn btn-primary" onClick={() => lancer(false)} disabled={!!loading}>
+            {loading === 'extraction' ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> : <CloudDownload size={14} />}
+            {loading === 'extraction' ? 'Extraction…' : 'Extraire'}
+          </button>
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
+// ─── Modal d'envoi des SMS ────────────────────────────────────────────────────
+
+/** Au-delà de ce nombre, une case à cocher est exigée en plus du clic. */
+const SEUIL_CONFIRMATION = 20;
+
+/**
+ * Envoi des SMS d'un palier, en trois temps : aperçu → confirmation → envoi.
+ *
+ * ⚠️ C'est le SEUL endroit du dashboard qui déclenche un envoi de masse. L'aperçu est
+ * rechargé à l'ouverture (et non repris d'un état plus ancien) pour que le nombre affiché
+ * soit celui du moment, et le texte montré est celui que le serveur va réellement envoyer.
+ * Au-delà de {@link SEUIL_CONFIRMATION} destinataires, une case à cocher est exigée : un
+ * clic distrait ne doit pas pouvoir écrire à une centaine de patientes.
+ */
+function EnvoiModal({
+  token, palier, onClose, onFini,
+}: {
+  token: string; palier: Palier;
+  onClose: () => void; onFini: (r: ResultatEnvoi) => void;
+}) {
+  const conf = palierConf(palier);
+  const [apercu, setApercu] = useState<ResultatEnvoi | null>(null);
+  const [etat, setEtat] = useState<'chargement' | 'pret' | 'envoi' | 'fini'>('chargement');
+  const [resultat, setResultat] = useState<ResultatEnvoi | null>(null);
+  const [coche, setCoche] = useState(false);
+
+  useEffect(() => {
+    let vivant = true;
+    (async () => {
+      const r = await envoyerSms(token, palier, true);
+      if (!vivant) return;
+      setApercu(r);
+      setEtat('pret');
+    })();
+    return () => { vivant = false; };
+  }, [token, palier]);
+
+  const nb = apercu?.a_envoyer ?? 0;
+  const besoinCoche = nb > SEUIL_CONFIRMATION;
+  const peutEnvoyer = etat === 'pret' && nb > 0 && (!besoinCoche || coche);
+  const message = apercu?.apercu?.[0]?.message ?? null;
+
+  async function envoyer() {
+    setEtat('envoi');
+    const r = await envoyerSms(token, palier, false);
+    setResultat(r);
+    setEtat('fini');
+    if (!r.erreur) onFini(r);
+  }
+
+  const ligne = (label: string, valeur: React.ReactNode, fort = false) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '5px 0', borderBottom: '1px solid #f1f5f9' }}>
+      <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{label}</span>
+      <span style={{ fontSize: fort ? 16 : 13, fontWeight: fort ? 800 : 600, color: fort ? '#047857' : 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>{valeur}</span>
+    </div>
+  );
+
+  return (
+    <Portal>
+      <div className="panel-overlay animate-fade-in" onClick={etat === 'envoi' ? undefined : onClose} />
+      <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 26, width: 540, maxHeight: '88vh', overflow: 'auto', zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <h2 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--text)', margin: 0 }}>
+            Envoyer les SMS {conf.label}
+          </h2>
+          {etat !== 'envoi' && (
+            <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>
+          )}
+        </div>
+
+        {etat === 'chargement' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10 }}>
+            <RefreshCw size={16} style={{ color: '#1d4ed8', animation: 'spin .8s linear infinite', flexShrink: 0 }} />
+            <p style={{ fontSize: 12.5, color: 'var(--text)', margin: 0 }}>Vérification des destinataires…</p>
+          </div>
+        )}
+
+        {apercu?.erreur && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10 }}>
+            <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0 }}>{apercu.erreur}</p>
+          </div>
+        )}
+
+        {/* ── Avant envoi ─────────────────────────────────────────────── */}
+        {etat === 'pret' && apercu && !apercu.erreur && (
+          <>
+            {nb === 0 ? (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10 }}>
+                <CheckCircle size={15} style={{ color: '#15803d', flexShrink: 0, marginTop: 1 }} />
+                <p style={{ fontSize: 12.5, color: '#15803d', margin: 0 }}>
+                  Rien à envoyer : toutes les lignes de ce palier ont déjà reçu leur SMS.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 14 }}>
+                  {ligne('Destinataires', nb, true)}
+                  {ligne('Segments facturés', apercu.cout_segments ?? '—')}
+                  {(apercu.ignores ?? 0) > 0 && ligne('Écartés', apercu.ignores)}
+                </div>
+
+                {(apercu.detail_ignores?.length ?? 0) > 0 && (
+                  <div style={{ padding: '10px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 9, marginBottom: 14 }}>
+                    <p style={{ fontSize: 11.5, color: '#92400e', margin: 0, lineHeight: 1.5 }}>
+                      Écartés : {apercu.detail_ignores!.map(i => `#${i.id} (${i.raison})`).join(', ')}
+                    </p>
+                  </div>
+                )}
+
+                {message && (
+                  <div style={{ marginBottom: 14 }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', margin: '0 0 5px', textTransform: 'uppercase', letterSpacing: '.3px' }}>
+                      Message envoyé
+                    </p>
+                    <p style={{ fontSize: 12, color: 'var(--text)', margin: 0, padding: '9px 11px', background: conf.fond, border: `1px solid ${conf.bord}`, borderRadius: 8, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+                      {message}
+                    </p>
+                  </div>
+                )}
+
+                {besoinCoche && (
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '11px 13px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 9, marginBottom: 14, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={coche} onChange={e => setCoche(e.target.checked)} style={{ marginTop: 2, cursor: 'pointer' }} />
+                    <span style={{ fontSize: 12.5, color: '#991b1b', lineHeight: 1.5 }}>
+                      Je confirme l'envoi à <strong>{nb} patientes</strong>. Cette action est irréversible.
+                    </span>
+                  </label>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {etat === 'envoi' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10 }}>
+            <RefreshCw size={16} style={{ color: '#1d4ed8', animation: 'spin .8s linear infinite', flexShrink: 0 }} />
+            <p style={{ fontSize: 12.5, color: '#1e40af', margin: 0 }}>
+              Envoi en cours vers {nb} destinataires… ne fermez pas cette fenêtre.
+            </p>
+          </div>
+        )}
+
+        {/* ── Après envoi ─────────────────────────────────────────────── */}
+        {etat === 'fini' && resultat && (
+          resultat.erreur ? (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10 }}>
+              <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
+              <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0 }}>{resultat.erreur}</p>
+            </div>
+          ) : (
+            <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10 }}>
+              {ligne('Envoyés', resultat.envoyes ?? 0, true)}
+              {(resultat.echecs ?? 0) > 0 && ligne('Échecs', resultat.echecs)}
+              {ligne('Segments facturés', resultat.cout_segments ?? '—')}
+              {(resultat.echecs ?? 0) > 0 && (
+                <p style={{ fontSize: 11.5, color: '#b45309', margin: '10px 0 0', lineHeight: 1.5 }}>
+                  Les échecs sont marqués « SMS non livré » dans la liste. Brevo peut encore faire
+                  évoluer les autres vers « livré » dans les minutes qui suivent.
+                </p>
+              )}
+            </div>
+          )
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={etat === 'envoi'}>
+            {etat === 'fini' ? 'Fermer' : 'Annuler'}
+          </button>
+          {etat !== 'fini' && (
+            <button
+              onClick={envoyer}
+              disabled={!peutEnvoyer}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 16px',
+                borderRadius: 8, border: 'none', fontSize: 13, fontWeight: 700, color: 'white',
+                fontFamily: 'Lexend,sans-serif',
+                background: peutEnvoyer ? '#dc2626' : '#e5e7eb',
+                cursor: peutEnvoyer ? 'pointer' : 'not-allowed',
+              }}>
+              {etat === 'envoi'
+                ? <><RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> Envoi…</>
+                : <><Send size={14} /> Envoyer {nb > 0 ? `les ${nb} SMS` : 'les SMS'}</>}
+            </button>
+          )}
+        </div>
+      </div>
+    </Portal>
+  );
+}
+
+// ─── Vue principale ───────────────────────────────────────────────────────────
+
+export function FacturationView({ user }: { user: AuthUser }) {
+  const [data, setData]           = useState<FacturationData | null>(null);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
+  const [succes, setSucces]       = useState('');
+  const [reference, setReference] = useState(aujourdhuiIso());
+  const [modal, setModal]         = useState<Palier | null>(null);
+  const [modalEnvoi, setModalEnvoi] = useState<Palier | null>(null);
+  const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
+  const [recherche, setRecherche] = useState('');
+  const [echeance, setEcheance]   = useState('');
+  // Aperçu par palier, obtenu du workflow d'envoi en `dry_run` : il fournit le texte exact
+  // du message ET le nombre réel de destinataires restants. C'est la même source que
+  // l'envoi, donc l'aperçu ne peut pas mentir.
+  const [apercus, setApercus]     = useState<Record<string, ResultatEnvoi | null>>({});
+
+  const charger = useCallback(async () => {
+    setLoading(true);
+    const [r, aJ30, aJ15] = await Promise.all([
+      chargerFacturation(user.token),
+      envoyerSms(user.token, 'J30', true),
+      envoyerSms(user.token, 'J15', true),
+    ]);
+    if ('erreur' in r) { setError(r.erreur); setData(null); }
+    else { setError(''); setData(r); }
+    setApercus({ J30: aJ30, J15: aJ15 });
+    setLoading(false);
+  }, [user.token]);
+
+  useEffect(() => { charger(); }, [charger]);
+
+  const lignes = data?.facturations ?? [];
+  const ajd = aujourdhuiIso();
+
+  // Nombre de lignes déjà en base pour l'échéance que viserait chaque palier.
+  const dejaEnBase = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const p of PALIERS) {
+      // `date_echeance` en base est l'« applicable du », pas la fin de location.
+      const { applicable } = datesPalier(reference, p.jours);
+      m[p.id] = lignes.filter(f => f.palier === p.id && f.date_echeance === applicable).length;
+    }
+    return m;
+  }, [lignes, reference]);
+
+  // Échéances distinctes du palier affiché, pour le filtre.
+  const echeances = useMemo(() => {
+    if (onglet === 'lots') return [];
+    const s = new Set<string>();
+    lignes.filter(f => f.palier === onglet).forEach(f => { if (f.date_echeance) s.add(f.date_echeance); });
+    return Array.from(s).sort();
+  }, [lignes, onglet]);
+
+  const visibles = useMemo(() => {
+    if (onglet === 'lots') return [];
+    const q = recherche.trim().toLowerCase();
+    return lignes.filter(f => {
+      if (f.palier !== onglet) return false;
+      if (echeance && f.date_echeance !== echeance) return false;
+      if (!q) return true;
+      const blob = [f.nom, f.prenom, f.telephone, f.email, f.orthop_prescription].join(' ').toLowerCase();
+      return blob.includes(q);
+    });
+  }, [lignes, onglet, recherche, echeance]);
+
+  // Remet le filtre d'échéance à zéro quand on change d'onglet (il ne veut plus rien dire).
+  useEffect(() => { setEcheance(''); }, [onglet]);
+
+  function exporterCsv() {
+    const entetes = ['Palier', 'Nom', 'Prenom', 'Telephone', 'Email', 'Fin de location',
+      'Applicable du (ORTHOP)', 'Prescription', 'Dossier', 'Statut SMS', 'Extrait le'];
+    const cell = (v: unknown) => '"' + String(v ?? '').split('"').join('""') + '"';
+    const corps = visibles.map(f => [
+      f.palier, f.nom, f.prenom, f.telephone, f.email,
+      finDeLocation(f.date_echeance), f.date_echeance,
+      f.orthop_prescription, f.orthop_dossier, f.sms_statut ?? 'a_envoyer', f.importe_le,
+    ].map(cell).join(';'));
+    const csv = [entetes.map(cell).join(';'), ...corps].join('\r\n');
+    // BOM : sans lui, Excel ouvre les accents en Mojibake.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `facturation_${onglet}_${ajd}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const stats = data?.stats;
+  const lots: FacturationLot[] = data?.lots ?? [];
+
+  return (
+    <div className="animate-fade-up">
+      {/*
+        Pas de titre ici : App affiche déjà « Facturation » et la date dans son en-tête de
+        page. En remettre un donnait le titre en double à l'écran. Comme RecouvrementView,
+        la vue se contente d'une ligne de contexte et place son bouton « Actualiser » dans
+        sa propre barre d'outils — celui de l'en-tête d'App rafraîchit les données de
+        l'entrant, dont cette vue ne se sert pas.
+      */}
+      <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 16px', lineHeight: 1.5 }}>
+        Relances préventives par SMS avant l’échéance de l’ordonnance, à deux paliers.
+      </p>
+
+      {/* ── L'envoi est actif : le dire, et dire ce qui protège ───────────── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 16 }}>
+        <MessageSquare size={15} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
+        <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
+          <strong>L’envoi de SMS est actif.</strong> Il ne part que sur le bouton « Envoyer les SMS »,
+          après une confirmation qui affiche le nombre exact de destinataires et le message. Une patiente
+          déjà servie ne peut pas recevoir deux fois le même palier, même en recliquant.
+        </p>
+      </div>
+
+      {error && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12 }}>
+          <AlertCircle size={14} style={{ color: '#dc2626', flexShrink: 0 }} />
+          <p style={{ fontSize: 12, color: '#dc2626', margin: 0 }}>{error}</p>
+        </div>
+      )}
+      {succes && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 8, marginBottom: 12 }}>
+          <CheckCircle size={14} style={{ color: '#15803d', flexShrink: 0 }} />
+          <p style={{ fontSize: 12, color: '#15803d', margin: 0 }}>{succes}</p>
+          <button onClick={() => setSucces('')} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#86efac', display: 'flex' }}><X size={12} /></button>
+        </div>
+      )}
+
+      {/* ── Date de référence ────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'white', border: '1px solid var(--border)', borderRadius: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+        <CalendarClock size={16} style={{ color: 'var(--blue)', flexShrink: 0 }} />
+        <label htmlFor="fact-ref" style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>
+          Date de référence
+        </label>
+        <input id="fact-ref" type="date" value={reference} onChange={e => setReference(e.target.value)} style={champStyle} />
+        {reference === ajd
+          ? <span style={{ fontSize: 11.5, color: '#047857', fontWeight: 600 }}>✓ Aujourd’hui</span>
+          : <button onClick={() => setReference(ajd)} style={{ fontSize: 11.5, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+              Revenir à aujourd’hui
+            </button>}
+        <span style={{ fontSize: 11.5, color: 'var(--muted)', marginLeft: 'auto' }}>
+          Les échéances visées sont calculées automatiquement à partir de cette date.
+        </span>
+        <button className="btn btn-ghost" onClick={charger} disabled={loading}>
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualiser
+        </button>
+      </div>
+
+      {/* ── Les deux paliers, séparés ────────────────────────────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14, marginBottom: 20 }}>
+        {PALIERS.map(p => {
+          const { fin, applicable } = datesPalier(reference, p.jours);
+          const stat = p.id === 'J30' ? stats?.j30 : stats?.j15;
+          const ap = apercus[p.id] ?? null;
+          const restants = ap?.a_envoyer ?? 0;
+          return (
+            <div key={p.id} style={{ padding: 18, background: p.fond, border: `1px solid ${p.bord}`, borderRadius: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 18, fontWeight: 800, color: p.teinte }}>{p.label}</span>
+                <span style={{ fontSize: 11.5, color: p.teinte, opacity: .8 }}>+{p.jours} jours</span>
+              </div>
+              <p style={{ fontSize: 12, color: p.teinte, opacity: .85, margin: '0 0 14px' }}>{p.texte}</p>
+
+              <div style={{ padding: '10px 12px', background: 'rgba(255,255,255,.7)', borderRadius: 9, marginBottom: 12 }}>
+                <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 2px', textTransform: 'uppercase', letterSpacing: '.3px', fontWeight: 700 }}>
+                  Fin de location — la date du SMS
+                </p>
+                <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)', margin: 0, fontFamily: 'Lexend,sans-serif' }}>
+                  {formatDateLongue(fin)}
+                </p>
+                <p style={{ fontSize: 11, color: 'var(--muted)', margin: '6px 0 0' }}>
+                  Interrogé dans ORTHOP : ordonnances <strong>applicables du {formatDate(applicable)}</strong>
+                  {' '}(le lendemain — c'est ainsi qu'ORTHOP les indexe)
+                </p>
+                <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '6px 0 0' }}>
+                  {dejaEnBase[p.id] > 0
+                    ? `${dejaEnBase[p.id]} ligne(s) déjà extraite(s) pour cette échéance`
+                    : 'Aucune ligne extraite pour cette échéance'}
+                </p>
+              </div>
+
+              {/* Mesuré le 2026-08-28 : ORTHOP crée les demandes de renouvellement ~34 jours
+                  à l'avance (121 dossiers à J+34, puis 3 à J+35). Le J-30 interroge J+31 :
+                  ça passe, mais avec peu de marge — d'où l'avertissement. */}
+              {p.id === 'J30' && (
+                <p style={{ fontSize: 11, color: p.teinte, opacity: .8, margin: '0 0 12px', lineHeight: 1.5 }}>
+                  ORTHOP ne crée les demandes qu'environ 34 jours à l'avance, et ce palier en interroge 31.
+                  Une liste anormalement courte est le signe d'un problème de données, pas d'une journée creuse.
+                </p>
+              )}
+
+              <SmsApercu texte={ap?.apercu?.[0]?.message ?? null} />
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14, fontSize: 12, color: p.teinte, flexWrap: 'wrap' }}>
+                <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.total ?? 0}</strong> au total</span>
+                <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.a_envoyer ?? 0}</strong> à envoyer</span>
+                {(ap?.cout_segments ?? 0) > 0 && (
+                  <span title="Un SMS de plus de 160 caractères est facturé en plusieurs segments">
+                    <strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{ap!.cout_segments}</strong> segments
+                  </span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-ghost" onClick={() => setModal(p.id)} style={{ flex: 1, justifyContent: 'center' }}>
+                  <CloudDownload size={14} /> Extraire
+                </button>
+                <button
+                  onClick={() => setModalEnvoi(p.id)}
+                  disabled={restants === 0}
+                  title={restants === 0
+                    ? 'Aucun SMS en attente pour ce palier'
+                    : `Envoyer le SMS ${p.label} à ${restants} patientes`}
+                  style={{
+                    flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', fontSize: 13,
+                    fontWeight: 700, color: 'white', fontFamily: 'Lexend,sans-serif',
+                    background: restants > 0 ? '#dc2626' : '#e5e7eb',
+                    cursor: restants > 0 ? 'pointer' : 'not-allowed',
+                  }}>
+                  <Send size={14} /> Envoyer{restants > 0 ? ` (${restants})` : ''}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Onglets ──────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+        {PALIERS.map(p => {
+          const actif = onglet === p.id;
+          const n = (p.id === 'J30' ? stats?.j30.total : stats?.j15.total) ?? 0;
+          return (
+            <button key={p.id} onClick={() => setOnglet(p.id)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9,
+              border: `1px solid ${actif ? p.teinte : 'var(--border)'}`, background: actif ? p.teinte : 'white',
+              color: actif ? 'white' : 'var(--text)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+              fontFamily: 'Lexend,sans-serif',
+            }}>
+              {p.label}
+              <span style={{ fontSize: 11, opacity: .85, fontWeight: 600 }}>({n})</span>
+            </button>
+          );
+        })}
+        <button onClick={() => setOnglet('lots')} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', borderRadius: 9,
+          border: `1px solid ${onglet === 'lots' ? 'var(--text)' : 'var(--border)'}`,
+          background: onglet === 'lots' ? 'var(--text)' : 'white',
+          color: onglet === 'lots' ? 'white' : 'var(--text)', fontSize: 12.5, fontWeight: 700,
+          cursor: 'pointer', fontFamily: 'Lexend,sans-serif',
+        }}>
+          <Layers size={13} /> Extractions ({lots.length})
+        </button>
+      </div>
+
+      {/* ── Contenu ──────────────────────────────────────────────────────── */}
+      {loading && !data ? (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 260, gap: 14, color: 'var(--muted)' }}>
+          <RefreshCw size={26} style={{ color: 'var(--blue)', animation: 'spin .8s linear infinite' }} />
+          <p style={{ fontSize: 13 }}>Chargement…</p>
+        </div>
+      ) : onglet === 'lots' ? (
+        <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead><tr>
+                {['Palier', 'Fin de location', 'Lignes', 'À envoyer', 'Livrés', 'Échecs', 'Extrait le'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {lots.length === 0 ? (
+                  <tr><td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--muted)', padding: '30px 10px' }}>
+                    Aucune extraction pour l’instant.
+                  </td></tr>
+                ) : lots.map(l => {
+                  const c = palierConf(l.palier);
+                  return (
+                    <tr key={l.batch_id}>
+                      <td style={tdStyle}><Chip texte={c.label} couleur={c.teinte} fond={c.fond} bord={c.bord} /></td>
+                      <td style={tdStyle} title={`Applicable du ${formatDate(l.date_echeance)}`}>
+                        {formatDate(finDeLocation(l.date_echeance))}
+                      </td>
+                      <td style={{ ...tdStyle, fontWeight: 700 }}>{l.total}</td>
+                      <td style={tdStyle}>{l.a_envoyer}</td>
+                      <td style={tdStyle}>{l.livre}</td>
+                      <td style={{ ...tdStyle, color: l.echec > 0 ? '#dc2626' : 'var(--muted)' }}>{l.echec}</td>
+                      <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12 }}>{formatDateTime(l.date_import)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Filtres */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--muted)', pointerEvents: 'none' }} />
+              <input value={recherche} onChange={e => setRecherche(e.target.value)}
+                placeholder="Nom, téléphone, email, n° prescription…"
+                style={{ ...champStyle, paddingLeft: 30, width: 280 }} />
+            </div>
+            {echeances.length > 1 && (
+              <select value={echeance} onChange={e => setEcheance(e.target.value)} style={{ ...champStyle, cursor: 'pointer' }}>
+                <option value="">Toutes les fins de location ({echeances.length})</option>
+                {echeances.map(d => <option key={d} value={d}>{formatDate(finDeLocation(d))}</option>)}
+              </select>
+            )}
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              {visibles.length} ligne{visibles.length > 1 ? 's' : ''}
+            </span>
+            <button className="btn btn-ghost" onClick={exporterCsv} disabled={visibles.length === 0}
+              title="Exporter la liste affichée en CSV — pratique pour recouper avec un export ORTHOP"
+              style={{ marginLeft: 'auto' }}>
+              <Download size={14} /> Exporter en CSV
+            </button>
+          </div>
+
+          <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr>
+                  {['Patiente', 'Téléphone', 'Email', 'Fin de location', 'SMS', 'Prescription', 'Extrait le'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {visibles.length === 0 ? (
+                    <tr><td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--muted)', padding: '30px 10px' }}>
+                      {lignes.some(f => f.palier === onglet)
+                        ? 'Aucune ligne ne correspond à ce filtre.'
+                        : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
+                    </td></tr>
+                  ) : visibles.map(f => (
+                    <tr key={f.id}>
+                      <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {[f.nom, f.prenom].filter(Boolean).join(' ') || '—'}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <Phone size={11} style={{ color: 'var(--muted)' }} />
+                          {f.telephone || '—'}
+                        </span>
+                      </td>
+                      <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {f.email
+                          ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                              <Mail size={11} style={{ color: 'var(--muted)', flexShrink: 0 }} />{f.email}
+                            </span>
+                          : <span style={{ color: 'var(--muted)' }}>—</span>}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}
+                          title={`Applicable du ${formatDate(f.date_echeance)} dans ORTHOP`}>
+                        {formatDate(finDeLocation(f.date_echeance))}
+                      </td>
+                      <td style={tdStyle}><SmsChip f={f} /></td>
+                      <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{f.orthop_prescription || '—'}</td>
+                      <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(f.importe_le ?? null)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {modal && (
+        <ExtractionModal
+          token={user.token}
+          palier={modal}
+          reference={reference}
+          onClose={() => setModal(null)}
+          onDone={(n, p) => {
+            setSucces(n > 0
+              ? `${n} ligne(s) ajoutée(s) au palier ${palierConf(p).label}.`
+              : `Aucune nouvelle ligne pour le palier ${palierConf(p).label} — la liste était déjà à jour.`);
+            setOnglet(p);
+            charger();
+          }}
+        />
+      )}
+
+      {modalEnvoi && (
+        <EnvoiModal
+          token={user.token}
+          palier={modalEnvoi}
+          onClose={() => setModalEnvoi(null)}
+          onFini={r => {
+            const n = r.envoyes ?? 0;
+            const e = r.echecs ?? 0;
+            setSucces(`${n} SMS envoyé(s)${e > 0 ? `, ${e} en échec` : ''}.`);
+            charger();
+          }}
+        />
+      )}
+    </div>
+  );
+}
