@@ -2544,7 +2544,7 @@ export default function App() {
     { id: 'rappels',      label: 'Rappels',           icon: Bell,          visibleRoles: ['admin', 'conseillere'] },
     { id: 'anomalies',    label: 'Anomalies',         icon: AlertTriangle, visibleRoles: ['admin', 'conseillere'] },
     { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement'] },
-    { id: 'facturation',  label: 'Facturation',        icon: Receipt,       visibleRoles: ['admin', 'recouvrement', 'facturation'] },
+    { id: 'facturation',  label: 'Facturation',        icon: Receipt,       visibleRoles: ['admin', 'facturation'] },
     { id: 'users',        label: 'Utilisateurs',      icon: Users,         visibleRoles: ['admin'] },
   ];
 
