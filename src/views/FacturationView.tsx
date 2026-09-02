@@ -138,33 +138,56 @@ async function extraireFacturation(token: string, palier: Palier, reference: str
  */
 export interface ResultatEnvoi {
   ok?: boolean;
-  mode?: 'apercu' | 'rien_a_envoyer' | 'envoi';
+  mode?: 'apercu' | 'rien_a_envoyer' | 'envoi' | 'refus_volume' | 'refus_desactive';
   palier?: Palier | null;
   cibles_trouvees?: number;
   a_envoyer?: number;
   ignores?: number;
   detail_ignores?: { id: number; raison: string }[];
   cout_segments?: number;
-  apercu?: { nom: string; tel: string; segments: number; message: string }[];
+  /**
+   * Aperçu des premiers envois. Les champs diffèrent selon le canal : le SMS porte
+   * `tel` / `segments` / `message`, le mail `email` / `sujet` / `template_id` — le corps
+   * du mail, lui, vit dans le modèle Brevo et n'est pas rendu ici.
+   */
+  apercu?: {
+    nom: string;
+    tel?: string; segments?: number; message?: string;
+    email?: string; sujet?: string; template_id?: number;
+  }[];
   envoyes?: number;
   echecs?: number;
-  details?: { id: number; tel: string; statut: string; message_id: string | null }[];
+  details?: { id: number; tel?: string; email?: string; statut: string; message_id: string | null }[];
+  canal?: Canal;
+  /** Motif de refus côté serveur : `volume` (plafond dépassé) ou `desactive`. */
+  refus?: string | null;
   erreur?: string;
 }
 
+export type Canal = 'sms' | 'mail';
+
+/** Les deux canaux ont le même contrat d'appel ; seul le webhook change. */
+const WEBHOOK_ENVOI: Record<Canal, string> = {
+  sms:  'facturation-send-sms',
+  mail: 'facturation-send-mail',
+};
+
 /**
- * Envoi des SMS d'un palier — ou simple aperçu quand `dryRun` est vrai.
+ * Envoi d'un palier sur un canal — ou simple aperçu quand `dryRun` est vrai.
  *
- * ⚠️ Le texte du message n'est JAMAIS transmis par le dashboard : il est construit côté
- * n8n. C'est ce qui garantit qu'un aperçu montre exactement ce qui partira, et qu'on ne
- * puisse pas faire envoyer un texte arbitraire depuis le navigateur.
+ * ⚠️ Le contenu n'est JAMAIS transmis par le dashboard : le texte du SMS comme l'objet du
+ * mail sont construits côté n8n. C'est ce qui garantit qu'un aperçu montre exactement ce
+ * qui partira, et qu'on ne puisse pas faire envoyer un contenu arbitraire depuis le
+ * navigateur. Le corps du mail vit dans le modèle Brevo (337 pour J-30, 336 pour J-15).
  *
- * Côté serveur, `sms_statut IS NULL` filtre les cibles : une patiente déjà servie ne peut
- * pas recevoir deux fois le même palier, même si le bouton est recliqué.
+ * ⚠️ Côté serveur, chaque canal a sa PROPRE garde d'idempotence — `sms_statut IS NULL`
+ * d'un côté, `email_statut IS NULL` de l'autre. Une patiente déjà servie sur un canal ne
+ * peut pas y être servie deux fois, même en recliquant ; et le mail part aussi vers les
+ * numéros FIXES, que le SMS ne peut pas atteindre.
  */
-async function envoyerSms(token: string, palier: Palier, dryRun: boolean): Promise<ResultatEnvoi> {
+async function envoyerCanal(token: string, canal: Canal, palier: Palier, dryRun: boolean): Promise<ResultatEnvoi> {
   try {
-    const r = await fetch(`${API_BASE}/webhook/facturation-send-sms`, {
+    const r = await fetch(`${API_BASE}/webhook/${WEBHOOK_ENVOI[canal]}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ palier, dry_run: dryRun }),
@@ -182,12 +205,17 @@ async function envoyerSms(token: string, palier: Palier, dryRun: boolean): Promi
   } catch (e) {
     const nom = e instanceof Error ? e.name : '';
     if (nom === 'TimeoutError') {
-      return { erreur: 'Délai dépassé. ⚠️ Des SMS ont peut-être déjà été envoyés — vérifiez la colonne SMS avant de réessayer.' };
+      const quoi = canal === 'mail' ? 'mails' : 'SMS';
+      const col  = canal === 'mail' ? 'Mail' : 'SMS';
+      return { erreur: `Délai dépassé. ⚠️ Des ${quoi} ont peut-être déjà été envoyés — vérifiez la colonne ${col} avant de réessayer.` };
     }
     if (e instanceof SyntaxError) return { erreur: 'Réponse illisible du serveur (JSON invalide).' };
     return { erreur: 'Serveur indisponible.' };
   }
 }
+
+const envoyerSms  = (token: string, palier: Palier, dryRun: boolean) => envoyerCanal(token, 'sms',  palier, dryRun);
+const envoyerMail = (token: string, palier: Palier, dryRun: boolean) => envoyerCanal(token, 'mail', palier, dryRun);
 
 async function chargerFacturation(token: string): Promise<FacturationData | { erreur: string }> {
   try {
@@ -228,17 +256,58 @@ function SmsChip({ f }: { f: Facturation }) {
 }
 
 /**
+ * État d'acheminement du mail.
+ *
+ * 💡 Fiabilité des signaux, comme au recouvrement : le CLIC est une preuve, l'ouverture
+ * seulement un indice — Gmail et Apple Mail préchargent ou bloquent le pixel de suivi.
+ */
+function MailChip({ f }: { f: Facturation }) {
+  switch (f.email_statut) {
+    case 'clique':      return <Chip texte="Mail cliqué"    couleur="#5b21b6" fond="#f5f3ff" bord="#c4b5fd" />;
+    case 'ouvert':      return <Chip texte="Mail ouvert"    couleur="#065f46" fond="#ecfdf5" bord="#6ee7b7" />;
+    case 'livre':       return <Chip texte="Mail livré"     couleur="#047857" fond="#f0fdf4" bord="#86efac" />;
+    case 'envoye':      return <Chip texte="Mail envoyé"    couleur="#1d4ed8" fond="#eff6ff" bord="#bfdbfe" />;
+    case 'echec':
+    case 'echec_envoi': return <Chip texte="Mail non livré" couleur="#b91c1c" fond="#fef2f2" bord="#fecaca" />;
+    default:
+      return f.email
+        ? <Chip texte="À envoyer"  couleur="#92400e" fond="#fffbeb" bord="#fde68a" />
+        : <Chip texte="Sans email" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
+  }
+}
+
+/** Bouton d'envoi : même forme pour les deux canaux, seule la teinte change. */
+function styleEnvoi(actif: boolean, teinte: string): React.CSSProperties {
+  return {
+    flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', fontSize: 13,
+    fontWeight: 700, color: 'white', fontFamily: 'Lexend,sans-serif',
+    background: actif ? teinte : '#e5e7eb',
+    cursor: actif ? 'pointer' : 'not-allowed',
+  };
+}
+
+/**
  * Aperçu du SMS du palier, avec son coût réel en segments.
  *
  * Rien n'est envoyé depuis cet écran — c'est un aperçu, pour valider le texte ET voir
  * ce qu'il coûte avant de brancher l'envoi. Un SMS est facturé au segment : le même
  * message peut coûter 1 ou 5 fois le prix selon les caractères employés.
  */
-function SmsApercu({ texte }: { texte: string | null }) {
+function SmsApercu({ texte, res }: { texte: string | null; res?: ResultatEnvoi | null }) {
   if (!texte) {
+    // ⚠️ Un aperçu vide a deux causes OPPOSEES : soit il ne reste rien à envoyer (sain),
+    // soit le serveur n'a pas répondu (panne). Les confondre faisait passer un palier
+    // entièrement traité pour un incident.
+    // ⚠️ Ne pas se fier à `mode` : en `dry_run` il vaut toujours `apercu`, même quand il
+    // n'y a plus une seule cible. Le signal fiable est `erreur`, puis `a_envoyer`.
     return (
       <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 12px', fontStyle: 'italic' }}>
-        Aperçu du message indisponible (le serveur n'a pas répondu).
+        {res?.erreur
+          ? `Aperçu du message indisponible (${res.erreur})`
+          : (res?.a_envoyer ?? 0) === 0
+            ? 'Aperçu du SMS indisponible : plus aucun envoi en attente sur ce palier.'
+            : "Aperçu du message indisponible (le serveur n'a pas répondu)."}
       </p>
     );
   }
@@ -430,7 +499,7 @@ function ExtractionModal({
 const SEUIL_CONFIRMATION = 20;
 
 /**
- * Envoi des SMS d'un palier, en trois temps : aperçu → confirmation → envoi.
+ * Envoi d'un palier sur un canal, en trois temps : aperçu → confirmation → envoi.
  *
  * ⚠️ C'est le SEUL endroit du dashboard qui déclenche un envoi de masse. L'aperçu est
  * rechargé à l'ouverture (et non repris d'un état plus ancien) pour que le nombre affiché
@@ -439,12 +508,14 @@ const SEUIL_CONFIRMATION = 20;
  * clic distrait ne doit pas pouvoir écrire à une centaine de patientes.
  */
 function EnvoiModal({
-  token, palier, onClose, onFini,
+  token, palier, canal, onClose, onFini,
 }: {
-  token: string; palier: Palier;
+  token: string; palier: Palier; canal: Canal;
   onClose: () => void; onFini: (r: ResultatEnvoi) => void;
 }) {
   const conf = palierConf(palier);
+  const estMail = canal === 'mail';
+  const nomCanal = estMail ? 'mails' : 'SMS';
   const [apercu, setApercu] = useState<ResultatEnvoi | null>(null);
   const [etat, setEtat] = useState<'chargement' | 'pret' | 'envoi' | 'fini'>('chargement');
   const [resultat, setResultat] = useState<ResultatEnvoi | null>(null);
@@ -453,22 +524,22 @@ function EnvoiModal({
   useEffect(() => {
     let vivant = true;
     (async () => {
-      const r = await envoyerSms(token, palier, true);
+      const r = await envoyerCanal(token, canal, palier, true);
       if (!vivant) return;
       setApercu(r);
       setEtat('pret');
     })();
     return () => { vivant = false; };
-  }, [token, palier]);
+  }, [token, palier, canal]);
 
   const nb = apercu?.a_envoyer ?? 0;
   const besoinCoche = nb > SEUIL_CONFIRMATION;
   const peutEnvoyer = etat === 'pret' && nb > 0 && (!besoinCoche || coche);
-  const message = apercu?.apercu?.[0]?.message ?? null;
+  const message = estMail ? (apercu?.apercu?.[0]?.sujet ?? null) : (apercu?.apercu?.[0]?.message ?? null);
 
   async function envoyer() {
     setEtat('envoi');
-    const r = await envoyerSms(token, palier, false);
+    const r = await envoyerCanal(token, canal, palier, false);
     setResultat(r);
     setEtat('fini');
     if (!r.erreur) onFini(r);
@@ -487,7 +558,7 @@ function EnvoiModal({
       <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', background: 'white', borderRadius: 16, padding: 26, width: 540, maxHeight: '88vh', overflow: 'auto', zIndex: 1001, boxShadow: '0 20px 60px rgba(0,0,0,.15)', border: '1px solid var(--border)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <h2 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--text)', margin: 0 }}>
-            Envoyer les SMS {conf.label}
+            Envoyer les {nomCanal} {conf.label}
           </h2>
           {etat !== 'envoi' && (
             <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>
@@ -515,14 +586,14 @@ function EnvoiModal({
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: 10 }}>
                 <CheckCircle size={15} style={{ color: '#15803d', flexShrink: 0, marginTop: 1 }} />
                 <p style={{ fontSize: 12.5, color: '#15803d', margin: 0 }}>
-                  Rien à envoyer : toutes les lignes de ce palier ont déjà reçu leur SMS.
+                  Rien à envoyer : toutes les lignes de ce palier ont déjà reçu leur {estMail ? 'mail' : 'SMS'}.
                 </p>
               </div>
             ) : (
               <>
                 <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 14 }}>
                   {ligne('Destinataires', nb, true)}
-                  {ligne('Segments facturés', apercu.cout_segments ?? '—')}
+                  {!estMail && ligne('Segments facturés', apercu.cout_segments ?? '—')}
                   {(apercu.ignores ?? 0) > 0 && ligne('Écartés', apercu.ignores)}
                 </div>
 
@@ -537,11 +608,17 @@ function EnvoiModal({
                 {message && (
                   <div style={{ marginBottom: 14 }}>
                     <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', margin: '0 0 5px', textTransform: 'uppercase', letterSpacing: '.3px' }}>
-                      Message envoyé
+                      {estMail ? 'Objet du mail' : 'Message envoyé'}
                     </p>
                     <p style={{ fontSize: 12, color: 'var(--text)', margin: 0, padding: '9px 11px', background: conf.fond, border: `1px solid ${conf.bord}`, borderRadius: 8, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
                       {message}
                     </p>
+                    {estMail && (
+                      <p style={{ fontSize: 11, color: 'var(--muted)', margin: '6px 0 0', lineHeight: 1.5 }}>
+                        Le corps du mail vient du modèle Brevo{' '}
+                        <strong>{apercu.apercu?.[0]?.template_id ?? '?'}</strong> et n'est pas rendu ici.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -549,7 +626,7 @@ function EnvoiModal({
                   <label style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '11px 13px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 9, marginBottom: 14, cursor: 'pointer' }}>
                     <input type="checkbox" checked={coche} onChange={e => setCoche(e.target.checked)} style={{ marginTop: 2, cursor: 'pointer' }} />
                     <span style={{ fontSize: 12.5, color: '#991b1b', lineHeight: 1.5 }}>
-                      Je confirme l'envoi à <strong>{nb} patientes</strong>. Cette action est irréversible.
+                      Je confirme l'envoi de {nomCanal} à <strong>{nb} patientes</strong>. Cette action est irréversible.
                     </span>
                   </label>
                 )}
@@ -578,11 +655,12 @@ function EnvoiModal({
             <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10 }}>
               {ligne('Envoyés', resultat.envoyes ?? 0, true)}
               {(resultat.echecs ?? 0) > 0 && ligne('Échecs', resultat.echecs)}
-              {ligne('Segments facturés', resultat.cout_segments ?? '—')}
+              {!estMail && ligne('Segments facturés', resultat.cout_segments ?? '—')}
               {(resultat.echecs ?? 0) > 0 && (
                 <p style={{ fontSize: 11.5, color: '#b45309', margin: '10px 0 0', lineHeight: 1.5 }}>
-                  Les échecs sont marqués « SMS non livré » dans la liste. Brevo peut encore faire
-                  évoluer les autres vers « livré » dans les minutes qui suivent.
+                  Les échecs sont marqués « {estMail ? 'Mail' : 'SMS'} non livré » dans la liste.
+                  Brevo peut encore faire évoluer les autres vers « livré » dans les minutes qui suivent
+                  {estMail ? ", puis vers « ouvert » ou « cliqué »" : ''}.
                 </p>
               )}
             </div>
@@ -606,7 +684,7 @@ function EnvoiModal({
               }}>
               {etat === 'envoi'
                 ? <><RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> Envoi…</>
-                : <><Send size={14} /> Envoyer {nb > 0 ? `les ${nb} SMS` : 'les SMS'}</>}
+                : <><Send size={14} /> Envoyer {nb > 0 ? `les ${nb} ${nomCanal}` : `les ${nomCanal}`}</>}
             </button>
           )}
         </div>
@@ -624,7 +702,7 @@ export function FacturationView({ user }: { user: AuthUser }) {
   const [succes, setSucces]       = useState('');
   const [reference, setReference] = useState(aujourdhuiIso());
   const [modal, setModal]         = useState<Palier | null>(null);
-  const [modalEnvoi, setModalEnvoi] = useState<Palier | null>(null);
+  const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal } | null>(null);
   const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
   const [recherche, setRecherche] = useState('');
   const [echeance, setEcheance]   = useState('');
@@ -632,17 +710,23 @@ export function FacturationView({ user }: { user: AuthUser }) {
   // du message ET le nombre réel de destinataires restants. C'est la même source que
   // l'envoi, donc l'aperçu ne peut pas mentir.
   const [apercus, setApercus]     = useState<Record<string, ResultatEnvoi | null>>({});
+  // Même principe pour le canal mail : l'aperçu vient du workflow d'envoi lui-même, donc
+  // le nombre affiché est exactement celui qui partirait.
+  const [apercusMail, setApercusMail] = useState<Record<string, ResultatEnvoi | null>>({});
 
   const charger = useCallback(async () => {
     setLoading(true);
-    const [r, aJ30, aJ15] = await Promise.all([
+    const [r, aJ30, aJ15, mJ30, mJ15] = await Promise.all([
       chargerFacturation(user.token),
       envoyerSms(user.token, 'J30', true),
       envoyerSms(user.token, 'J15', true),
+      envoyerMail(user.token, 'J30', true),
+      envoyerMail(user.token, 'J15', true),
     ]);
     if ('erreur' in r) { setError(r.erreur); setData(null); }
     else { setError(''); setData(r); }
     setApercus({ J30: aJ30, J15: aJ15 });
+    setApercusMail({ J30: mJ30, J15: mJ15 });
     setLoading(false);
   }, [user.token]);
 
@@ -687,12 +771,13 @@ export function FacturationView({ user }: { user: AuthUser }) {
 
   function exporterCsv() {
     const entetes = ['Palier', 'Nom', 'Prenom', 'Telephone', 'Email', 'Fin de location',
-      'Applicable du (ORTHOP)', 'Prescription', 'Dossier', 'Statut SMS', 'Extrait le'];
+      'Applicable du (ORTHOP)', 'Prescription', 'Dossier', 'Statut SMS', 'Statut mail', 'Extrait le'];
     const cell = (v: unknown) => '"' + String(v ?? '').split('"').join('""') + '"';
     const corps = visibles.map(f => [
       f.palier, f.nom, f.prenom, f.telephone, f.email,
       finDeLocation(f.date_echeance), f.date_echeance,
-      f.orthop_prescription, f.orthop_dossier, f.sms_statut ?? 'a_envoyer', f.importe_le,
+      f.orthop_prescription, f.orthop_dossier,
+      f.sms_statut ?? 'a_envoyer', f.email_statut ?? 'a_envoyer', f.importe_le,
     ].map(cell).join(';'));
     const csv = [entetes.map(cell).join(';'), ...corps].join('\r\n');
     // BOM : sans lui, Excel ouvre les accents en Mojibake.
@@ -717,16 +802,18 @@ export function FacturationView({ user }: { user: AuthUser }) {
         l'entrant, dont cette vue ne se sert pas.
       */}
       <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 16px', lineHeight: 1.5 }}>
-        Relances préventives par SMS avant l’échéance de l’ordonnance, à deux paliers.
+        Relances préventives par SMS et par e-mail avant l’échéance de l’ordonnance, à deux paliers.
       </p>
 
       {/* ── L'envoi est actif : le dire, et dire ce qui protège ───────────── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 16 }}>
         <MessageSquare size={15} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
-          <strong>L’envoi de SMS est actif.</strong> Il ne part que sur le bouton « Envoyer les SMS »,
-          après une confirmation qui affiche le nombre exact de destinataires et le message. Une patiente
-          déjà servie ne peut pas recevoir deux fois le même palier, même en recliquant.
+          <strong>Les envois SMS et e-mail sont actifs.</strong> Rien ne part sans un clic sur
+          « SMS » ou « Mail », après une confirmation qui affiche le nombre exact de destinataires et
+          le contenu. Les deux canaux sont suivis <strong>séparément</strong> : une patiente déjà servie
+          sur un canal ne peut pas y être servie deux fois, même en recliquant, et le mail atteint aussi
+          les numéros fixes.
         </p>
       </div>
 
@@ -770,7 +857,9 @@ export function FacturationView({ user }: { user: AuthUser }) {
           const { fin, applicable } = datesPalier(reference, p.jours);
           const stat = p.id === 'J30' ? stats?.j30 : stats?.j15;
           const ap = apercus[p.id] ?? null;
+          const apM = apercusMail[p.id] ?? null;
           const restants = ap?.a_envoyer ?? 0;
+          const restantsMail = apM?.a_envoyer ?? 0;
           return (
             <div key={p.id} style={{ padding: 18, background: p.fond, border: `1px solid ${p.bord}`, borderRadius: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -797,21 +886,47 @@ export function FacturationView({ user }: { user: AuthUser }) {
                 </p>
               </div>
 
-              {/* Mesuré le 2026-08-28 : ORTHOP crée les demandes de renouvellement ~34 jours
-                  à l'avance (121 dossiers à J+34, puis 3 à J+35). Le J-30 interroge J+31 :
-                  ça passe, mais avec peu de marge — d'où l'avertissement. */}
+              {/* ⚠️ Corrigé le 2026-09-02 : ce n'est PAS une fenêtre glissante de ~34 jours,
+                  c'est un MUR FIXE qui avance par sauts. Entre deux lots ORTHOP, la date la plus
+                  lointaine disponible ne bouge pas alors que la cible du J-30 avance d'un jour
+                  par jour : la marge se consomme toute seule jusqu'à zéro. Constaté les 01 et
+                  02/09 — 4 lignes puis 1, sans la moindre erreur. */}
               {p.id === 'J30' && (
                 <p style={{ fontSize: 11, color: p.teinte, opacity: .8, margin: '0 0 12px', lineHeight: 1.5 }}>
-                  ORTHOP ne crée les demandes qu'environ 34 jours à l'avance, et ce palier en interroge 31.
-                  Une liste anormalement courte est le signe d'un problème de données, pas d'une journée creuse.
+                  ORTHOP crée ses demandes de renouvellement par lots. Si le lot le plus lointain n'a
+                  pas encore été créé, ce palier renvoie une liste quasi vide <strong>sans aucune
+                  erreur</strong>. Une liste anormalement courte n'est jamais une journée creuse :
+                  relancez l'extraction dès qu'ORTHOP a avancé.
                 </p>
               )}
 
-              <SmsApercu texte={ap?.apercu?.[0]?.message ?? null} />
+              <SmsApercu texte={ap?.apercu?.[0]?.message ?? null} res={ap} />
+
+              {/* Objet du mail. Le CORPS vit dans le modèle Brevo : il n'est pas rendu ici,
+                  et c'est voulu — une copie locale finirait par diverger du modèle réel. */}
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '.3px' }}>
+                  Objet du mail
+                </p>
+                <p style={{ fontSize: 11.5, color: 'var(--text)', margin: 0, lineHeight: 1.5 }}>
+                  {apM?.apercu?.[0]?.sujet
+                    ? <>{apM.apercu[0].sujet}
+                        <span style={{ color: 'var(--muted)' }}> — modèle Brevo {apM.apercu[0].template_id}</span>
+                      </>
+                    : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
+                        {apM?.erreur
+                          ? `Aperçu indisponible (${apM.erreur})`
+                          : (apM?.a_envoyer ?? 0) === 0
+                            ? 'Plus aucun mail en attente sur ce palier.'
+                            : "Aperçu indisponible (le serveur n'a pas répondu)."}
+                      </span>}
+                </p>
+              </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14, fontSize: 12, color: p.teinte, flexWrap: 'wrap' }}>
                 <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.total ?? 0}</strong> au total</span>
-                <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.a_envoyer ?? 0}</strong> à envoyer</span>
+                <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.a_envoyer ?? 0}</strong> SMS à envoyer</span>
+                <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.mail_a_envoyer ?? 0}</strong> mails à envoyer</span>
                 {(ap?.cout_segments ?? 0) > 0 && (
                   <span title="Un SMS de plus de 160 caractères est facturé en plusieurs segments">
                     <strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{ap!.cout_segments}</strong> segments
@@ -819,25 +934,30 @@ export function FacturationView({ user }: { user: AuthUser }) {
                 )}
               </div>
 
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-ghost" onClick={() => setModal(p.id)} style={{ flex: 1, justifyContent: 'center' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <button className="btn btn-ghost" onClick={() => setModal(p.id)} style={{ justifyContent: 'center' }}>
                   <CloudDownload size={14} /> Extraire
                 </button>
-                <button
-                  onClick={() => setModalEnvoi(p.id)}
-                  disabled={restants === 0}
-                  title={restants === 0
-                    ? 'Aucun SMS en attente pour ce palier'
-                    : `Envoyer le SMS ${p.label} à ${restants} patientes`}
-                  style={{
-                    flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    gap: 6, padding: '8px 14px', borderRadius: 8, border: 'none', fontSize: 13,
-                    fontWeight: 700, color: 'white', fontFamily: 'Lexend,sans-serif',
-                    background: restants > 0 ? '#dc2626' : '#e5e7eb',
-                    cursor: restants > 0 ? 'pointer' : 'not-allowed',
-                  }}>
-                  <Send size={14} /> Envoyer{restants > 0 ? ` (${restants})` : ''}
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    onClick={() => setModalEnvoi({ palier: p.id, canal: 'sms' })}
+                    disabled={restants === 0}
+                    title={restants === 0
+                      ? 'Aucun SMS en attente pour ce palier'
+                      : `Envoyer le SMS ${p.label} à ${restants} patientes`}
+                    style={styleEnvoi(restants > 0, '#dc2626')}>
+                    <MessageSquare size={14} /> SMS{restants > 0 ? ` (${restants})` : ''}
+                  </button>
+                  <button
+                    onClick={() => setModalEnvoi({ palier: p.id, canal: 'mail' })}
+                    disabled={restantsMail === 0}
+                    title={restantsMail === 0
+                      ? 'Aucun mail en attente pour ce palier'
+                      : `Envoyer le mail ${p.label} à ${restantsMail} patientes`}
+                    style={styleEnvoi(restantsMail > 0, '#7c3aed')}>
+                    <Mail size={14} /> Mail{restantsMail > 0 ? ` (${restantsMail})` : ''}
+                  </button>
+                </div>
               </div>
             </div>
           );
@@ -940,11 +1060,11 @@ export function FacturationView({ user }: { user: AuthUser }) {
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <thead><tr>
-                  {['Patiente', 'Téléphone', 'Email', 'Fin de location', 'SMS', 'Prescription', 'Extrait le'].map(h => <th key={h} style={thStyle}>{h}</th>)}
+                  {['Patiente', 'Téléphone', 'Email', 'Fin de location', 'SMS', 'Mail', 'Prescription', 'Extrait le'].map(h => <th key={h} style={thStyle}>{h}</th>)}
                 </tr></thead>
                 <tbody>
                   {visibles.length === 0 ? (
-                    <tr><td colSpan={7} style={{ ...tdStyle, textAlign: 'center', color: 'var(--muted)', padding: '30px 10px' }}>
+                    <tr><td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--muted)', padding: '30px 10px' }}>
                       {lignes.some(f => f.palier === onglet)
                         ? 'Aucune ligne ne correspond à ce filtre.'
                         : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
@@ -972,6 +1092,7 @@ export function FacturationView({ user }: { user: AuthUser }) {
                         {formatDate(finDeLocation(f.date_echeance))}
                       </td>
                       <td style={tdStyle}><SmsChip f={f} /></td>
+                      <td style={tdStyle}><MailChip f={f} /></td>
                       <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{f.orthop_prescription || '—'}</td>
                       <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(f.importe_le ?? null)}</td>
                     </tr>
@@ -1002,12 +1123,14 @@ export function FacturationView({ user }: { user: AuthUser }) {
       {modalEnvoi && (
         <EnvoiModal
           token={user.token}
-          palier={modalEnvoi}
+          palier={modalEnvoi.palier}
+          canal={modalEnvoi.canal}
           onClose={() => setModalEnvoi(null)}
           onFini={r => {
             const n = r.envoyes ?? 0;
             const e = r.echecs ?? 0;
-            setSucces(`${n} SMS envoyé(s)${e > 0 ? `, ${e} en échec` : ''}.`);
+            const quoi = modalEnvoi.canal === 'mail' ? 'mail(s)' : 'SMS';
+            setSucces(`${n} ${quoi} envoyé(s)${e > 0 ? `, ${e} en échec` : ''}.`);
             charger();
           }}
         />

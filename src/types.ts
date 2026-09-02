@@ -172,10 +172,28 @@ export interface Facturation {
   email: string | null;
   /** « Applicable du » visée par le palier — la date d'échéance de l'ordonnance. */
   date_echeance: string | null;
-  /** Suivi d'envoi. NULL pour l'instant : l'envoi de SMS n'est pas encore branché. */
+  /**
+   * Suivi d'envoi du SMS. `null` = aucun envoi tenté — ou PANNE SILENCIEUSE d'envoi, le
+   * nœud Brevo étant en `continueRegularOutput` (l'exécution s'affiche alors en « succès »).
+   */
   sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | null;
   sms_le?: string | null;
   sms_message_id?: string | null;
+  /**
+   * Suivi du mail préventif — modèles Brevo 337 (J-30) et 336 (J-15).
+   *
+   * ⚠️ Canal INDÉPENDANT du SMS : il a sa propre garde d'idempotence côté serveur
+   * (`email_statut IS NULL`), donc son « reste à envoyer » diffère légitimement de celui du
+   * SMS, et il part aussi vers les numéros FIXES que le SMS ne peut pas atteindre.
+   *
+   * Progression par rang, sans régression possible :
+   * `envoye` 1 < `echec` 2 < `livre` 3 < `ouvert` 4 < `clique` 5.
+   */
+  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | null;
+  email_le?: string | null;
+  email_message_id?: string | null;
+  email_ouvert_le?: string | null;
+  email_clic_le?: string | null;
   batch_id?: string | null;
   batch_label?: string | null;
   orthop_prescription?: string | null;
@@ -187,10 +205,18 @@ export interface Facturation {
 
 export interface PalierStats {
   total: number;
+  /** Reste à envoyer par SMS (`sms_statut IS NULL`). */
   a_envoyer: number;
   envoye: number;
   livre: number;
   echec: number;
+  /** Reste à envoyer par mail (`email_statut IS NULL`) — compté séparément du SMS. */
+  mail_a_envoyer: number;
+  mail_envoye: number;
+  mail_livre: number;
+  mail_ouvert: number;
+  mail_clique: number;
+  mail_echec: number;
 }
 
 export interface FacturationStats extends PalierStats {
