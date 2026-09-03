@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  RefreshCw, AlertCircle, CloudDownload, Eye, X, Search, Download,
+  RefreshCw, AlertCircle, CloudDownload, Eye, X, Download,
   CalendarClock, MessageSquare, CheckCircle, Layers, Mail, Phone, Send,
-  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import type { AuthUser, Facturation, FacturationData, FacturationLot, Palier } from '../types';
-import { Portal } from '../lib/Portal';
+import {
+  Chip, StatsBar, type VuePuce, GroupedList, type GroupeEntete,
+  DataTable, thStyle, tdStyle, tdDiscret, SearchInput, Portal,
+} from '../ui';
 import {
   aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, isFixe,
 } from '../lib/format';
@@ -240,25 +242,31 @@ async function chargerFacturation(token: string): Promise<FacturationData | { er
 
 // ─── Petits composants ────────────────────────────────────────────────────────
 
-function Chip({ texte, couleur, fond, bord }: { texte: string; couleur: string; fond: string; bord: string }) {
+/**
+ * Étiquette de palier. ⚠️ Volontairement PAS un `Chip` : un palier n'est pas un état
+ * d'acheminement, il a sa propre teinte (ambre pour J-30, bleu pour J-15). Lui imposer un
+ * `ton` sémantique brouillerait les deux langages visuels.
+ */
+function PalierChip({ palier }: { palier: Palier }) {
+  const c = palierConf(palier);
   return (
     <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999,
-      fontSize: 11, fontWeight: 700, color: couleur, background: fond, border: `1px solid ${bord}`,
-      whiteSpace: 'nowrap',
-    }}>{texte}</span>
+      display: 'inline-flex', alignItems: 'center', padding: '2px var(--sp-2)',
+      borderRadius: 'var(--r-pill)', fontSize: 'var(--fs-xs)', fontWeight: 700,
+      whiteSpace: 'nowrap', color: c.teinte, background: c.fond, border: `1px solid ${c.bord}`,
+    }}>{c.label}</span>
   );
 }
 
-/** État d'acheminement du SMS. Tout est à `null` tant que l'envoi n'est pas branché. */
+/** État d'acheminement du SMS, tel que Brevo le rapporte. */
 function SmsChip({ f }: { f: Facturation }) {
-  if (isFixe(f.telephone)) return <Chip texte="Fixe · sans SMS" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
+  if (isFixe(f.telephone)) return <Chip texte="Fixe · sans SMS" ton="neutre" />;
   switch (f.sms_statut) {
-    case 'livre':       return <Chip texte="SMS livré"     couleur="#065f46" fond="#ecfdf5" bord="#6ee7b7" />;
-    case 'envoye':      return <Chip texte="SMS envoyé"    couleur="#1d4ed8" fond="#eff6ff" bord="#bfdbfe" />;
+    case 'livre':       return <Chip texte="SMS livré"     ton="ok" />;
+    case 'envoye':      return <Chip texte="SMS envoyé"    ton="encours" />;
     case 'echec':
-    case 'echec_envoi': return <Chip texte="SMS non livré" couleur="#b91c1c" fond="#fef2f2" bord="#fecaca" />;
-    default:            return <Chip texte="À envoyer"     couleur="#92400e" fond="#fffbeb" bord="#fde68a" />;
+    case 'echec_envoi': return <Chip texte="SMS non livré" ton="echec" />;
+    default:            return <Chip texte="À envoyer"     ton="attente" />;
   }
 }
 
@@ -270,20 +278,20 @@ function SmsChip({ f }: { f: Facturation }) {
  */
 function MailChip({ f }: { f: Facturation }) {
   switch (f.email_statut) {
-    case 'clique':      return <Chip texte="Mail cliqué"    couleur="#5b21b6" fond="#f5f3ff" bord="#c4b5fd" />;
-    case 'ouvert':      return <Chip texte="Mail ouvert"    couleur="#065f46" fond="#ecfdf5" bord="#6ee7b7" />;
-    case 'livre':       return <Chip texte="Mail livré"     couleur="#047857" fond="#f0fdf4" bord="#86efac" />;
-    case 'envoye':      return <Chip texte="Mail envoyé"    couleur="#1d4ed8" fond="#eff6ff" bord="#bfdbfe" />;
+    case 'clique':      return <Chip texte="Mail cliqué"    ton="fort" />;
+    case 'ouvert':      return <Chip texte="Mail ouvert"    ton="ok" />;
+    case 'livre':       return <Chip texte="Mail livré"     ton="ok2" />;
+    case 'envoye':      return <Chip texte="Mail envoyé"    ton="encours" />;
     case 'echec':
-    case 'echec_envoi': return <Chip texte="Mail non livré" couleur="#b91c1c" fond="#fef2f2" bord="#fecaca" />;
+    case 'echec_envoi': return <Chip texte="Mail non livré" ton="echec" />;
     // Ligne volontairement exclue du canal mail : rien n'est dû, rien ne partira.
     // ⚠️ Sans ce cas, ces lignes retomberaient sur « À envoyer » et donneraient
     // l'impression d'un retard d'envoi qui n'existe pas.
-    case 'non_concerne': return <Chip texte="Hors périmètre" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
+    case 'non_concerne': return <Chip texte="Hors périmètre" ton="neutre" />;
     default:
       return f.email
-        ? <Chip texte="À envoyer"  couleur="#92400e" fond="#fffbeb" bord="#fde68a" />
-        : <Chip texte="Sans email" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
+        ? <Chip texte="À envoyer"  ton="attente" />
+        : <Chip texte="Sans email" ton="neutre" />;
   }
 }
 
@@ -358,15 +366,6 @@ const champStyle: React.CSSProperties = {
   padding: '8px 11px', borderRadius: 8, border: '1px solid var(--border)',
   fontSize: 13, color: 'var(--text)', outline: 'none', fontFamily: 'inherit', background: 'white',
 };
-const thStyle: React.CSSProperties = {
-  padding: '8px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700,
-  fontSize: 11, color: 'var(--text)', letterSpacing: '.3px', textTransform: 'uppercase',
-  borderBottom: '2px solid var(--border)', whiteSpace: 'nowrap', background: '#f8fafc',
-};
-const tdStyle: React.CSSProperties = {
-  padding: '9px 10px', borderBottom: '1px solid #f1f5f9', fontSize: 13, color: 'var(--text)',
-};
-
 // ─── Modal d'extraction ───────────────────────────────────────────────────────
 
 function ExtractionModal({
@@ -749,61 +748,6 @@ const VUES_ENVOI: VueEnvoi[] = [
 
 const vueParId = (id: string) => VUES_ENVOI.find(v => v.id === id) ?? VUES_ENVOI[0];
 
-/** Statistiques d'envoi du palier affiché. Cliquer une puce filtre la liste. */
-function StatsEnvoi({ lignes, vue, onVue }: { lignes: Facturation[]; vue: string; onVue: (id: string) => void }) {
-  const total = lignes.length;
-
-  const rangee = (canal: 'sms' | 'mail', titre: string, Icone: typeof MessageSquare) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '7px 0' }}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, width: 62, flexShrink: 0,
-                     fontSize: 12, fontWeight: 800, color: 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>
-        <Icone size={13} style={{ color: 'var(--muted)' }} /> {titre}
-      </span>
-      {VUES_ENVOI.filter(v => v.canal === canal).map(v => {
-        const n = lignes.filter(v.teste).length;
-        const actif = vue === v.id;
-        const rouge = v.alerte && n > 0;
-        return (
-          <button key={v.id} onClick={() => onVue(actif ? 'tout' : v.id)}
-            title={n === 0 ? 'Aucune ligne dans cet état' : `Afficher ces ${n} ligne(s)`}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999,
-              fontSize: 11.5, cursor: n === 0 && !actif ? 'default' : 'pointer',
-              fontWeight: actif ? 800 : 600,
-              marginLeft: v.sousEnsemble ? -2 : 0,
-              opacity: n === 0 && !actif ? .45 : 1,
-              color: actif ? 'white' : rouge ? '#b91c1c' : 'var(--text)',
-              background: actif ? (rouge ? '#b91c1c' : 'var(--text)') : rouge ? '#fef2f2' : 'white',
-              border: `1px solid ${actif ? 'transparent' : rouge ? '#fecaca' : 'var(--border)'}`,
-            }}>
-            {v.sousEnsemble && <span style={{ opacity: .5 }}>↳</span>}
-            {v.libelle} <strong style={{ fontFamily: 'Lexend,sans-serif' }}>{n}</strong>
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  return (
-    <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '10px 14px', marginBottom: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.3px' }}>
-          Statistiques d’envoi
-        </span>
-        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{total} ligne{total > 1 ? 's' : ''} sur ce palier</span>
-        {vue !== 'tout' && (
-          <button onClick={() => onVue('tout')} style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
-            Retirer le filtre « {vueParId(vue).libelle} »
-          </button>
-        )}
-      </div>
-      {rangee('sms', 'SMS', MessageSquare)}
-      <div style={{ borderTop: '1px solid #f1f5f9' }} />
-      {rangee('mail', 'Mail', Mail)}
-    </div>
-  );
-}
-
 // ─── Vue principale ───────────────────────────────────────────────────────────
 
 export function FacturationView({ user }: { user: AuthUser }) {
@@ -914,17 +858,23 @@ export function FacturationView({ user }: { user: AuthUser }) {
         // groupe sain reste silencieux et qu'un problème saute aux yeux.
         const c = (id: string) => lg.filter(vueParId(id).teste).length;
         // Singulier ET pluriel : « 1 mails à envoyer » se remarque tout de suite.
-        const resume = [
-          { s: 'SMS à envoyer',  p: 'SMS à envoyer',   n: c('sms_attente'),  couleur: '#92400e', fond: '#fffbeb', bord: '#fde68a' },
-          { s: 'SMS livré',      p: 'SMS livrés',      n: c('sms_livre'),    couleur: '#065f46', fond: '#ecfdf5', bord: '#6ee7b7' },
-          { s: 'SMS non livré',  p: 'SMS non livrés',  n: c('sms_echec'),    couleur: '#b91c1c', fond: '#fef2f2', bord: '#fecaca' },
-          { s: 'mail à envoyer', p: 'mails à envoyer', n: c('mail_attente'), couleur: '#92400e', fond: '#fffbeb', bord: '#fde68a' },
-          { s: 'mail ouvert',    p: 'mails ouverts',   n: c('mail_ouvert'),  couleur: '#065f46', fond: '#ecfdf5', bord: '#6ee7b7' },
-          { s: 'mail non livré', p: 'mails non livrés',n: c('mail_echec'),   couleur: '#b91c1c', fond: '#fef2f2', bord: '#fecaca' },
-        ].filter(x => x.n > 0).map(x => ({ ...x, libelle: x.n > 1 ? x.p : x.s }));
+        const resume = ([
+          { s: 'SMS à envoyer',  p: 'SMS à envoyer',   n: c('sms_attente'),  ton: 'attente' },
+          { s: 'SMS livré',      p: 'SMS livrés',      n: c('sms_livre'),    ton: 'ok' },
+          { s: 'SMS non livré',  p: 'SMS non livrés',  n: c('sms_echec'),    ton: 'echec' },
+          { s: 'mail à envoyer', p: 'mails à envoyer', n: c('mail_attente'), ton: 'attente' },
+          { s: 'mail ouvert',    p: 'mails ouverts',   n: c('mail_ouvert'),  ton: 'ok' },
+          { s: 'mail non livré', p: 'mails non livrés',n: c('mail_echec'),   ton: 'echec' },
+        ] as const).filter(x => x.n > 0).map(x => ({ ton: x.ton, n: x.n, libelle: x.n > 1 ? x.p : x.s }));
         return { date, lignes: lg, resume };
       });
   }, [visibles]);
+
+  // Compteurs de la barre de statistiques. ⚠️ Calculés sur `duPalier` — donc sur TOUT le
+  // palier, jamais sur la liste filtrée : sinon ils changeraient à chaque frappe dans la
+  // recherche et ne décriraient plus rien.
+  const puces = (canal: 'sms' | 'mail'): VuePuce[] =>
+    VUES_ENVOI.filter(v => v.canal === canal).map(v => ({ ...v, n: duPalier.filter(v.teste).length }));
 
   // L'échéance que viserait le palier affiché aujourd'hui : son groupe est déplié d'office,
   // c'est celui sur lequel on travaille.
@@ -1200,10 +1150,9 @@ export function FacturationView({ user }: { user: AuthUser }) {
                     Aucune extraction pour l’instant.
                   </td></tr>
                 ) : lots.map(l => {
-                  const c = palierConf(l.palier);
                   return (
                     <tr key={l.batch_id}>
-                      <td style={tdStyle}><Chip texte={c.label} couleur={c.teinte} fond={c.fond} bord={c.bord} /></td>
+                      <td style={tdStyle}><PalierChip palier={l.palier} /></td>
                       <td style={tdStyle} title={`Applicable du ${formatDate(l.date_echeance)}`}>
                         {formatDate(finDeLocation(l.date_echeance))}
                       </td>
@@ -1221,22 +1170,24 @@ export function FacturationView({ user }: { user: AuthUser }) {
         </div>
       ) : (
         <>
-          <StatsEnvoi lignes={duPalier} vue={vue} onVue={setVue} />
+          <StatsBar
+            sousTitre={`${duPalier.length} ligne${duPalier.length > 1 ? 's' : ''} sur ce palier`}
+            rangees={[
+              { titre: 'SMS',  icone: MessageSquare, puces: puces('sms') },
+              { titre: 'Mail', icone: Mail,          puces: puces('mail') },
+            ]}
+            actif={vue === 'tout' ? null : vue}
+            onActif={id => setVue(id ?? 'tout')}
+            libelleActif={vueParId(vue).libelle}
+          />
 
           {/* Filtres */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-              <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--muted)', pointerEvents: 'none' }} />
-              <input value={recherche} onChange={e => setRecherche(e.target.value)}
-                placeholder="Nom, prénom, téléphone, email, n° prescription…"
-                style={{ ...champStyle, paddingLeft: 30, width: 300 }} />
-              {recherche !== '' && (
-                <button onClick={() => setRecherche('')} title="Effacer la recherche"
-                  style={{ position: 'absolute', right: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
-                  <X size={13} />
-                </button>
-              )}
-            </div>
+            <SearchInput
+              valeur={recherche}
+              onChange={setRecherche}
+              placeholder="Nom, prénom, téléphone, email, n° prescription…"
+            />
             {echeances.length > 1 && (
               <select value={echeance} onChange={e => setEcheance(e.target.value)} style={{ ...champStyle, cursor: 'pointer' }}>
                 <option value="">Toutes les fins de location ({echeances.length})</option>
@@ -1263,88 +1214,65 @@ export function FacturationView({ user }: { user: AuthUser }) {
             </button>
           </div>
 
-          {groupes.length === 0 ? (
-            <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12,
-                          padding: '30px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
-              {duPalier.length > 0
-                ? 'Aucune ligne ne correspond à ce filtre.'
-                : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
-            </div>
-          ) : groupes.map(g => {
-            const ouvert = estOuvert(g.date);
-            const cible = g.date === echeanceCible;
-            const conf = palierConf(onglet);
-            return (
-              <div key={g.date} style={{
-                background: 'white', border: `1px solid ${cible ? conf.bord : 'var(--border)'}`,
-                borderRadius: 12, marginBottom: 10, overflow: 'hidden',
-              }}>
-                <button
-                  onClick={() => setOuverts(o => ({ ...o, [g.date]: !ouvert }))}
-                  title={`Applicable du ${formatDate(g.date)} dans ORTHOP`}
-                  style={{
-                    width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px',
-                    background: cible ? conf.fond : '#f8fafc', border: 'none',
-                    borderBottom: ouvert ? '1px solid var(--border)' : 'none',
-                    cursor: 'pointer', textAlign: 'left', flexWrap: 'wrap', fontFamily: 'inherit',
-                  }}>
-                  {ouvert
-                    ? <ChevronDown size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />
-                    : <ChevronRight size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />}
-                  <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 13.5, fontWeight: 800, color: 'var(--text)' }}>
-                    {formatDateLongue(finDeLocation(g.date)) || '(échéance inconnue)'}
-                  </span>
-                  {cible && <Chip texte="échéance visée aujourd’hui" couleur={conf.teinte} fond="white" bord={conf.bord} />}
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-                    {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''}
-                  </span>
-                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                    {g.resume.map(r => (
-                      <Chip key={r.libelle} texte={`${r.n} ${r.libelle}`} couleur={r.couleur} fond={r.fond} bord={r.bord} />
-                    ))}
-                  </span>
-                </button>
-
-                {ouvert && (
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                      <thead><tr>
-                        {/* Pas de colonne « Fin de location » : elle est dans l'en-tête du groupe. */}
-                        {['Patiente', 'Téléphone', 'Email', 'SMS', 'Mail', 'Prescription', 'Extrait le']
-                          .map(h => <th key={h} style={thStyle}>{h}</th>)}
-                      </tr></thead>
-                      <tbody>
-                        {g.lignes.map(f => (
-                          <tr key={f.id}>
-                            <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                              {[f.nom, f.prenom].filter(Boolean).join(' ') || '—'}
-                            </td>
-                            <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
-                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                                <Phone size={11} style={{ color: 'var(--muted)' }} />
-                                {f.telephone || '—'}
-                              </span>
-                            </td>
-                            <td style={{ ...tdStyle, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                              {f.email
-                                ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                                    <Mail size={11} style={{ color: 'var(--muted)', flexShrink: 0 }} />{f.email}
-                                  </span>
-                                : <span style={{ color: 'var(--muted)' }}>—</span>}
-                            </td>
-                            <td style={tdStyle}><SmsChip f={f} /></td>
-                            <td style={tdStyle}><MailChip f={f} /></td>
-                            <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{f.orthop_prescription || '—'}</td>
-                            <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(f.importe_le ?? null)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {/* ⚠️ Groupé par échéance, et non en liste plate : l'extraction quotidienne empile
+              une centaine de lignes par jour — 769 sur ce seul palier. Le regroupement suit
+              la façon dont le travail se fait, une échéance à la fois.
+              Ordre DÉCROISSANT : la plus récente est celle qu'on traite. */}
+          <GroupedList
+            groupes={groupes.map((g): GroupeEntete => {
+              const conf = palierConf(onglet);
+              const cible = g.date === echeanceCible;
+              return {
+                cle: g.date,
+                titre: formatDateLongue(finDeLocation(g.date)) || '(échéance inconnue)',
+                compte: `${g.lignes.length} patiente${g.lignes.length > 1 ? 's' : ''}`,
+                puces: g.resume.map(r => ({ texte: `${r.n} ${r.libelle}`, ton: r.ton })),
+                marque: cible ? 'échéance visée aujourd’hui' : undefined,
+                accent: cible,
+                accentBord: conf.bord,
+                accentFond: conf.fond,
+              };
+            })}
+            estOuvert={estOuvert}
+            onToggle={cle => setOuverts(o => ({ ...o, [cle]: !estOuvert(cle) }))}
+            vide={duPalier.length > 0
+              ? 'Aucune ligne ne correspond à ce filtre.'
+              : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
+            rendu={cle => {
+              const g = groupes.find(x => x.date === cle);
+              if (!g) return null;
+              return (
+                /* Pas de colonne « Fin de location » : elle est dans l'en-tête du groupe. */
+                <DataTable encadre={false}
+                  colonnes={['Patiente', 'Téléphone', 'Email', 'SMS', 'Mail', 'Prescription', 'Extrait le']}>
+                  {g.lignes.map(f => (
+                    <tr key={f.id}>
+                      <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {[f.nom, f.prenom].filter(Boolean).join(' ') || '—'}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <Phone size={11} style={{ color: 'var(--muted)' }} />
+                          {f.telephone || '—'}
+                        </span>
+                      </td>
+                      <td style={{ ...tdStyle, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {f.email
+                          ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                              <Mail size={11} style={{ color: 'var(--muted)', flexShrink: 0 }} />{f.email}
+                            </span>
+                          : <span style={{ color: 'var(--muted)' }}>—</span>}
+                      </td>
+                      <td style={tdStyle}><SmsChip f={f} /></td>
+                      <td style={tdStyle}><MailChip f={f} /></td>
+                      <td style={tdDiscret}>{f.orthop_prescription || '—'}</td>
+                      <td style={tdDiscret}>{formatDateTime(f.importe_le ?? null)}</td>
+                    </tr>
+                  ))}
+                </DataTable>
+              );
+            }}
+          />
         </>
       )}
 

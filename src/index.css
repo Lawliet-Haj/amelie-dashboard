@@ -3,6 +3,15 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/*
+ * ── Jetons ────────────────────────────────────────────────────────────────────
+ *
+ * ⚠️ MESURE DU 2026-09-03 : les vues portaient **102 couleurs hex en dur** pour ces
+ * quelques variables, et 945 blocs `style={{}}` contre 132 usages de classes. Conséquence
+ * concrète : le même état « livré » n'avait pas le même vert d'une vue à l'autre.
+ * Les jetons d'état ci-dessous existent pour que ça cesse — les composants de `src/ui/`
+ * ne doivent JAMAIS écrire un hex.
+ */
 :root {
   --blue:         #2d7fc2;
   --blue-dark:    #1a5ea0;
@@ -19,8 +28,32 @@
   --border:       #d8e8f2;
   --text:         #1a2b42;
   --text-2:       #334d65;
-  --muted:        #607d94;
-  --muted-light:  #94aab9;
+  /*
+   * ⚠️ #607d94 donnait 4,32:1 sur blanc — sous le minimum WCAG AA (4,5:1), et il sert
+   * partout à 11-12 px. #55738c donne **4,98:1** : conforme, à teinte quasi identique.
+   * Ne pas l'éclaircir « pour faire plus doux » sans revérifier le contraste.
+   */
+  --muted:        #55738c;
+  --muted-light:  #7d95a8;
+
+  /* ── États d'envoi et de suivi ──────────────────────────────────────────────
+   * Un état = un triplet (texte, fond, bordure). Toutes les puces du dashboard
+   * piochent ici, pour qu'« attente » ou « échec » aient la même couleur partout. */
+  --st-attente-fg: #92400e;  --st-attente-bg: #fffbeb;  --st-attente-bd: #fde68a;
+  --st-encours-fg: #1d4ed8;  --st-encours-bg: #eff6ff;  --st-encours-bd: #bfdbfe;
+  --st-ok-fg:      #065f46;  --st-ok-bg:      #ecfdf5;  --st-ok-bd:      #6ee7b7;
+  --st-ok2-fg:     #047857;  --st-ok2-bg:     #f0fdf4;  --st-ok2-bd:     #86efac;
+  --st-fort-fg:    #5b21b6;  --st-fort-bg:    #f5f3ff;  --st-fort-bd:    #c4b5fd;
+  --st-echec-fg:   #b91c1c;  --st-echec-bg:   #fef2f2;  --st-echec-bd:   #fecaca;
+  --st-neutre-fg:  #55738c;  --st-neutre-bg:  #f9fafb;  --st-neutre-bd:  #e5e7eb;
+
+  /* ── Échelles ───────────────────────────────────────────────────────────────
+   * Fermées volontairement. Les vues utilisaient 11 / 11,5 / 12 / 12,5 / 13 / 13,5 px :
+   * des demi-pixels qui ne se justifiaient par rien et qu'on ne peut pas retenir. */
+  --fs-xs: 11px;  --fs-sm: 12px;  --fs-md: 13px;  --fs-lg: 15px;
+  --fs-xl: 18px;  --fs-2xl: 24px;
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;  --sp-4: 16px;  --sp-5: 24px;
+  --r-sm: 8px;  --r-md: 10px;  --r-lg: 12px;  --r-xl: 14px;  --r-pill: 999px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
