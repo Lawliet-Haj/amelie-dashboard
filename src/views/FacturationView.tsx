@@ -866,7 +866,9 @@ export function FacturationView({ user }: { user: AuthUser }) {
     if (onglet === 'lots') return [];
     const s = new Set<string>();
     lignes.filter(f => f.palier === onglet).forEach(f => { if (f.date_echeance) s.add(f.date_echeance); });
-    return Array.from(s).sort();
+    // Même ordre que les groupes : le plus récent d'abord, sinon le sélecteur et la liste
+    // se liraient à l'envers l'un de l'autre.
+    return Array.from(s).sort().reverse();
   }, [lignes, onglet]);
 
   // Toutes les lignes du palier affiché, AVANT recherche et filtre d'état : c'est sur cet
@@ -901,8 +903,12 @@ export function FacturationView({ user }: { user: AuthUser }) {
       const a = m.get(k);
       if (a) a.push(f); else m.set(k, [f]);
     }
+    // ⚠️ Ordre DÉCROISSANT : l'échéance la plus récente en tête. Chaque jour ajoute une
+    // date plus lointaine, et c'est celle-là qu'on traite ; les anciennes sont déjà
+    // servies. En ordre croissant, le seul groupe actionnable se retrouvait tout en bas,
+    // après une semaine de groupes terminés.
     return Array.from(m.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
+      .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([date, lg]) => {
         // Résumé affiché sur l'en-tête replié : seuls les états NON VIDES, pour qu'un
         // groupe sain reste silencieux et qu'un problème saute aux yeux.
