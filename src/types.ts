@@ -188,8 +188,13 @@ export interface Facturation {
    *
    * Progression par rang, sans régression possible :
    * `envoye` 1 < `echec` 2 < `livre` 3 < `ouvert` 4 < `clique` 5.
+   *
+   * `non_concerne` est posé à la main : il exclut définitivement une ligne du canal mail
+   * sans jamais rien envoyer. Posé le 2026-09-03 sur les 1 390 lignes antérieures à
+   * l'ouverture du canal, qui avaient déjà reçu leur SMS — sans quoi le premier envoi
+   * automatique aurait écrit à tout l'historique d'un coup.
    */
-  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | null;
+  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | 'non_concerne' | null;
   email_le?: string | null;
   email_message_id?: string | null;
   email_ouvert_le?: string | null;
@@ -217,6 +222,8 @@ export interface PalierStats {
   mail_ouvert: number;
   mail_clique: number;
   mail_echec: number;
+  /** Lignes volontairement exclues du canal mail (voir `email_statut`). */
+  mail_non_concerne: number;
 }
 
 export interface FacturationStats extends PalierStats {

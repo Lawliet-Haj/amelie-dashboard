@@ -269,6 +269,10 @@ function MailChip({ f }: { f: Facturation }) {
     case 'envoye':      return <Chip texte="Mail envoyé"    couleur="#1d4ed8" fond="#eff6ff" bord="#bfdbfe" />;
     case 'echec':
     case 'echec_envoi': return <Chip texte="Mail non livré" couleur="#b91c1c" fond="#fef2f2" bord="#fecaca" />;
+    // Ligne volontairement exclue du canal mail : rien n'est dû, rien ne partira.
+    // ⚠️ Sans ce cas, ces lignes retomberaient sur « À envoyer » et donneraient
+    // l'impression d'un retard d'envoi qui n'existe pas.
+    case 'non_concerne': return <Chip texte="Hors périmètre" couleur="#6b7280" fond="#f9fafb" bord="#e5e7eb" />;
     default:
       return f.email
         ? <Chip texte="À envoyer"  couleur="#92400e" fond="#fffbeb" bord="#fde68a" />
@@ -927,6 +931,13 @@ export function FacturationView({ user }: { user: AuthUser }) {
                 <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.total ?? 0}</strong> au total</span>
                 <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.a_envoyer ?? 0}</strong> SMS à envoyer</span>
                 <span><strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat?.mail_a_envoyer ?? 0}</strong> mails à envoyer</span>
+                {/* Explique l'écart entre le total et le reste à envoyer : sans ça, un
+                    palier à « 734 au total / 0 mail à envoyer » ressemble à une anomalie. */}
+                {(stat?.mail_non_concerne ?? 0) > 0 && (
+                  <span title="Lignes antérieures à l'ouverture du canal mail, déjà servies par SMS : volontairement exclues, aucun mail ne partira">
+                    <strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{stat!.mail_non_concerne}</strong> hors périmètre
+                  </span>
+                )}
                 {(ap?.cout_segments ?? 0) > 0 && (
                   <span title="Un SMS de plus de 160 caractères est facturé en plusieurs segments">
                     <strong style={{ fontSize: 15, fontFamily: 'Lexend,sans-serif' }}>{ap!.cout_segments}</strong> segments
