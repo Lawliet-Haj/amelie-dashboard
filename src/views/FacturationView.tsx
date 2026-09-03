@@ -1085,11 +1085,6 @@ export function FacturationView({ user }: { user: AuthUser }) {
                   {apM?.apercu?.[0]?.sujet
                     ? <>{apM.apercu[0].sujet}
                         <span style={{ color: 'var(--muted)' }}> — modèle Brevo {apM.apercu[0].template_id}</span>
-                        {apM.expediteur && (
-                          <span style={{ display: 'block', color: 'var(--muted)', marginTop: 2 }}>
-                            de {apM.expediteur.name} &lt;{apM.expediteur.email}&gt;
-                          </span>
-                        )}
                       </>
                     : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
                         {apM?.erreur
@@ -1098,6 +1093,15 @@ export function FacturationView({ user }: { user: AuthUser }) {
                             ? 'Plus aucun mail en attente sur ce palier.'
                             : "Aperçu indisponible (le serveur n'a pas répondu)."}
                       </span>}
+                  {/* ⚠️ HORS du ternaire, volontairement : l'expéditeur configuré doit rester
+                      lisible même quand il ne reste rien à envoyer — c'est-à-dire la plupart
+                      du temps, une fois la cohorte du jour traitée. Placé dans la branche
+                      « il y a un aperçu », il disparaissait de l'écran dès 12h30. */}
+                  {apM?.expediteur && (
+                    <span style={{ display: 'block', color: 'var(--muted)', marginTop: 2 }}>
+                      de {apM.expediteur.name} &lt;{apM.expediteur.email}&gt;
+                    </span>
+                  )}
                 </p>
               </div>
 
