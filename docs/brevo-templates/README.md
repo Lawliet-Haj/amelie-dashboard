@@ -66,6 +66,25 @@ J-15 reprend celui de son corps et de son SMS.
 
 `Madame … ,` et `… fin le … , afin de` dans le 336. Corrigées.
 
+## Expéditeur — `no-reply@tire-lait-express.fr`
+
+Choisi par le client le **2026-09-03**, comme le mail de relance ordonnance de W3.
+Sender Brevo **id 13**, validé.
+
+| Où | Valeur |
+|---|---|
+| charge utile du workflow (`EXPEDITEUR` dans `Preparer Envois`) | `Tire-Lait Express <no-reply@tire-lait-express.fr>` — **gagne sur nos envois** |
+| champ `sender` des modèles 337 et 336 | sender id 13, posé le 2026-09-03 (auparavant `info@`, id 3) |
+
+⚠️ Un expéditeur **non validé dans Brevo** fait échouer l'appel avec « Sender is invalid /
+inactive », même quand le domaine est authentifié DKIM/SPF. Toute nouvelle adresse doit
+d'abord être validée dans **Brevo > Expéditeurs**.
+
+⚠️ **Pas de `replyTo`** : il retombe donc sur l'expéditeur, `no-reply@`. Un en-tête ne peut
+PAS empêcher une réponse — le rejet réel du courrier entrant se configure côté OVH. Le pied
+des deux mails donne déjà `info@tire-lait-express.fr` et les téléphones comme point de
+contact.
+
 ## ⚠️ Le sujet existe en DEUX endroits — les modifier ensemble
 
 | Où | Forme | Qui l'utilise |
@@ -79,9 +98,14 @@ doivent être tenues identiques à la main.
 
 ## Variables attendues par les modèles
 
-`params.nom_complet` et `params.date_fin`. Le workflow envoie aussi `nom`, `prenom`,
-`date`, et leurs variantes en majuscules — des alias, pour qu'un changement de modèle ne
-demande aucune intervention côté n8n.
+`params.nom_complet` et `params.date_fin`. Le workflow envoie aussi `nom`, `prenom` et
+`date`, disponibles sans coût si un modèle évoluait.
+
+⚠️ **Tout en minuscules, délibérément.** Des alias en majuscules (`NOM`, `DATE`…) ont existé
+le temps de découvrir ce que les modèles utilisaient. Deux clés ne différant que par la casse
+rendent la charge utile illisible pour certains outils — le `ConvertFrom-Json` de PowerShell
+la **refuse** — ce qui gêne le diagnostic sans rien apporter. Ne pas les réintroduire :
+corriger le modèle plutôt.
 
 ⚠️ `params.date_fin` est la **fin de location**, c'est-à-dire la **veille** de
 `facturation.date_echeance` (qui est l'« applicable du » d'ORTHOP). C'est exactement la

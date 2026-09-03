@@ -160,6 +160,12 @@ export interface ResultatEnvoi {
   echecs?: number;
   details?: { id: number; tel?: string; email?: string; statut: string; message_id: string | null }[];
   canal?: Canal;
+  /**
+   * Expéditeur réel du mail, tel que le serveur le passera à Brevo. Affiché plutôt que
+   * supposé : c'est le seul moyen de vérifier depuis l'écran de quelle adresse part le
+   * message. Défini dans `Preparer Envois`, jamais côté navigateur.
+   */
+  expediteur?: { name: string; email: string } | null;
   /** Motif de refus côté serveur : `volume` (plafond dépassé) ou `desactive`. */
   refus?: string | null;
   erreur?: string;
@@ -599,6 +605,7 @@ function EnvoiModal({
                 <div style={{ padding: '14px 16px', background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 10, marginBottom: 14 }}>
                   {ligne('Destinataires', nb, true)}
                   {!estMail && ligne('Segments facturés', apercu.cout_segments ?? '—')}
+                  {estMail && apercu.expediteur && ligne('Expéditeur', `${apercu.expediteur.name} <${apercu.expediteur.email}>`)}
                   {(apercu.ignores ?? 0) > 0 && ligne('Écartés', apercu.ignores)}
                 </div>
 
@@ -1072,6 +1079,11 @@ export function FacturationView({ user }: { user: AuthUser }) {
                   {apM?.apercu?.[0]?.sujet
                     ? <>{apM.apercu[0].sujet}
                         <span style={{ color: 'var(--muted)' }}> — modèle Brevo {apM.apercu[0].template_id}</span>
+                        {apM.expediteur && (
+                          <span style={{ display: 'block', color: 'var(--muted)', marginTop: 2 }}>
+                            de {apM.expediteur.name} &lt;{apM.expediteur.email}&gt;
+                          </span>
+                        )}
                       </>
                     : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
                         {apM?.erreur
