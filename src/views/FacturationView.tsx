@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   RefreshCw, AlertCircle, CloudDownload, Eye, X, Search, Download,
   CalendarClock, MessageSquare, CheckCircle, Layers, Mail, Phone, Send,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import type { AuthUser, Facturation, FacturationData, FacturationLot, Palier } from '../types';
 import { Portal } from '../lib/Portal';
@@ -697,6 +698,105 @@ function EnvoiModal({
   );
 }
 
+const ECHECS_ENVOI = ['echec', 'echec_envoi'];
+
+/**
+ * Les vues d'envoi : chaque puce des statistiques est AUSSI un filtre. Voir un compteur
+ * donne immédiatement envie de voir les lignes qu'il désigne — c'est la même approche que
+ * la barre de filtres du Recouvrement.
+ *
+ * ⚠️ « Ouverts » inclut les mails CLIQUÉS : un clic implique une ouverture, et W19 pose
+ * `email_ouvert_le` dans les deux cas. « dont cliqués » est donc un SOUS-ENSEMBLE, pas une
+ * catégorie parallèle — les compteurs du canal mail ne s'additionnent donc pas, et
+ * l'étiquette le dit pour que ça ne passe pas pour une incohérence.
+ *
+ * ⚠️ « À envoyer » du SMS exclut les numéros fixes : aucun SMS ne leur est dû, les compter
+ * comme en attente ferait croire à un retard permanent.
+ */
+type VueEnvoi = {
+  id: string;
+  libelle: string;
+  canal: 'sms' | 'mail' | null;
+  alerte?: boolean;
+  sousEnsemble?: boolean;
+  teste: (f: Facturation) => boolean;
+};
+
+const VUES_ENVOI: VueEnvoi[] = [
+  { id: 'tout', libelle: 'Toutes', canal: null, teste: () => true },
+
+  { id: 'sms_attente', libelle: 'À envoyer',  canal: 'sms', teste: f => !f.sms_statut && !isFixe(f.telephone) },
+  { id: 'sms_envoye',  libelle: 'Envoyés',    canal: 'sms', teste: f => f.sms_statut === 'envoye' },
+  { id: 'sms_livre',   libelle: 'Livrés',     canal: 'sms', teste: f => f.sms_statut === 'livre' },
+  { id: 'sms_echec',   libelle: 'Non livrés', canal: 'sms', alerte: true, teste: f => ECHECS_ENVOI.includes(f.sms_statut ?? '') },
+  { id: 'sms_fixe',    libelle: 'Fixes',      canal: 'sms', teste: f => isFixe(f.telephone) },
+
+  { id: 'mail_attente', libelle: 'À envoyer',   canal: 'mail', teste: f => !f.email_statut },
+  { id: 'mail_envoye',  libelle: 'Envoyés',       canal: 'mail', teste: f => f.email_statut === 'envoye' },
+  { id: 'mail_livre',   libelle: 'Livrés',        canal: 'mail', teste: f => f.email_statut === 'livre' },
+  { id: 'mail_ouvert',  libelle: 'Ouverts',       canal: 'mail', teste: f => f.email_statut === 'ouvert' || f.email_statut === 'clique' },
+  { id: 'mail_clique',  libelle: 'dont cliqués',  canal: 'mail', sousEnsemble: true, teste: f => f.email_statut === 'clique' },
+  { id: 'mail_echec',   libelle: 'Non livrés',    canal: 'mail', alerte: true, teste: f => ECHECS_ENVOI.includes(f.email_statut ?? '') },
+  { id: 'mail_hors',    libelle: 'Hors périmètre', canal: 'mail', teste: f => f.email_statut === 'non_concerne' },
+];
+
+const vueParId = (id: string) => VUES_ENVOI.find(v => v.id === id) ?? VUES_ENVOI[0];
+
+/** Statistiques d'envoi du palier affiché. Cliquer une puce filtre la liste. */
+function StatsEnvoi({ lignes, vue, onVue }: { lignes: Facturation[]; vue: string; onVue: (id: string) => void }) {
+  const total = lignes.length;
+
+  const rangee = (canal: 'sms' | 'mail', titre: string, Icone: typeof MessageSquare) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '7px 0' }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, width: 62, flexShrink: 0,
+                     fontSize: 12, fontWeight: 800, color: 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>
+        <Icone size={13} style={{ color: 'var(--muted)' }} /> {titre}
+      </span>
+      {VUES_ENVOI.filter(v => v.canal === canal).map(v => {
+        const n = lignes.filter(v.teste).length;
+        const actif = vue === v.id;
+        const rouge = v.alerte && n > 0;
+        return (
+          <button key={v.id} onClick={() => onVue(actif ? 'tout' : v.id)}
+            title={n === 0 ? 'Aucune ligne dans cet état' : `Afficher ces ${n} ligne(s)`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 999,
+              fontSize: 11.5, cursor: n === 0 && !actif ? 'default' : 'pointer',
+              fontWeight: actif ? 800 : 600,
+              marginLeft: v.sousEnsemble ? -2 : 0,
+              opacity: n === 0 && !actif ? .45 : 1,
+              color: actif ? 'white' : rouge ? '#b91c1c' : 'var(--text)',
+              background: actif ? (rouge ? '#b91c1c' : 'var(--text)') : rouge ? '#fef2f2' : 'white',
+              border: `1px solid ${actif ? 'transparent' : rouge ? '#fecaca' : 'var(--border)'}`,
+            }}>
+            {v.sousEnsemble && <span style={{ opacity: .5 }}>↳</span>}
+            {v.libelle} <strong style={{ fontFamily: 'Lexend,sans-serif' }}>{n}</strong>
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '10px 14px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 2 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.3px' }}>
+          Statistiques d’envoi
+        </span>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>{total} ligne{total > 1 ? 's' : ''} sur ce palier</span>
+        {vue !== 'tout' && (
+          <button onClick={() => onVue('tout')} style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+            Retirer le filtre « {vueParId(vue).libelle} »
+          </button>
+        )}
+      </div>
+      {rangee('sms', 'SMS', MessageSquare)}
+      <div style={{ borderTop: '1px solid #f1f5f9' }} />
+      {rangee('mail', 'Mail', Mail)}
+    </div>
+  );
+}
+
 // ─── Vue principale ───────────────────────────────────────────────────────────
 
 export function FacturationView({ user }: { user: AuthUser }) {
@@ -709,6 +809,10 @@ export function FacturationView({ user }: { user: AuthUser }) {
   const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal } | null>(null);
   const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
   const [recherche, setRecherche] = useState('');
+  // Filtre issu des statistiques d'envoi ('tout' = aucun).
+  const [vue, setVue]             = useState('tout');
+  // Groupes dépliés, par « applicable du ». Une valeur explicite l'emporte sur le défaut.
+  const [ouverts, setOuverts]     = useState<Record<string, boolean>>({});
   const [echeance, setEcheance]   = useState('');
   // Aperçu par palier, obtenu du workflow d'envoi en `dry_run` : il fournit le texte exact
   // du message ET le nombre réel de destinataires restants. C'est la même source que
@@ -758,20 +862,72 @@ export function FacturationView({ user }: { user: AuthUser }) {
     return Array.from(s).sort();
   }, [lignes, onglet]);
 
+  // Toutes les lignes du palier affiché, AVANT recherche et filtre d'état : c'est sur cet
+  // ensemble que portent les statistiques. Les calculer sur la liste filtrée les ferait
+  // changer à chaque frappe et elles ne décriraient plus le palier.
+  const duPalier = useMemo(
+    () => (onglet === 'lots' ? [] : lignes.filter(f => f.palier === onglet)),
+    [lignes, onglet],
+  );
+
   const visibles = useMemo(() => {
     if (onglet === 'lots') return [];
     const q = recherche.trim().toLowerCase();
-    return lignes.filter(f => {
-      if (f.palier !== onglet) return false;
+    const v = vueParId(vue);
+    return duPalier.filter(f => {
       if (echeance && f.date_echeance !== echeance) return false;
+      if (!v.teste(f)) return false;
       if (!q) return true;
       const blob = [f.nom, f.prenom, f.telephone, f.email, f.orthop_prescription].join(' ').toLowerCase();
       return blob.includes(q);
     });
-  }, [lignes, onglet, recherche, echeance]);
+  }, [duPalier, onglet, recherche, echeance, vue]);
+
+  // ── Regroupement par fin de location ────────────────────────────────────────
+  // ⚠️ L'extraction quotidienne empile une centaine de lignes par jour : en une semaine,
+  // une liste plate devient illisible. Le regroupement suit la façon dont le travail se
+  // fait — on traite une échéance à la fois.
+  const groupes = useMemo(() => {
+    const m = new Map<string, Facturation[]>();
+    for (const f of visibles) {
+      const k = f.date_echeance || '';
+      const a = m.get(k);
+      if (a) a.push(f); else m.set(k, [f]);
+    }
+    return Array.from(m.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([date, lg]) => {
+        // Résumé affiché sur l'en-tête replié : seuls les états NON VIDES, pour qu'un
+        // groupe sain reste silencieux et qu'un problème saute aux yeux.
+        const c = (id: string) => lg.filter(vueParId(id).teste).length;
+        // Singulier ET pluriel : « 1 mails à envoyer » se remarque tout de suite.
+        const resume = [
+          { s: 'SMS à envoyer',  p: 'SMS à envoyer',   n: c('sms_attente'),  couleur: '#92400e', fond: '#fffbeb', bord: '#fde68a' },
+          { s: 'SMS livré',      p: 'SMS livrés',      n: c('sms_livre'),    couleur: '#065f46', fond: '#ecfdf5', bord: '#6ee7b7' },
+          { s: 'SMS non livré',  p: 'SMS non livrés',  n: c('sms_echec'),    couleur: '#b91c1c', fond: '#fef2f2', bord: '#fecaca' },
+          { s: 'mail à envoyer', p: 'mails à envoyer', n: c('mail_attente'), couleur: '#92400e', fond: '#fffbeb', bord: '#fde68a' },
+          { s: 'mail ouvert',    p: 'mails ouverts',   n: c('mail_ouvert'),  couleur: '#065f46', fond: '#ecfdf5', bord: '#6ee7b7' },
+          { s: 'mail non livré', p: 'mails non livrés',n: c('mail_echec'),   couleur: '#b91c1c', fond: '#fef2f2', bord: '#fecaca' },
+        ].filter(x => x.n > 0).map(x => ({ ...x, libelle: x.n > 1 ? x.p : x.s }));
+        return { date, lignes: lg, resume };
+      });
+  }, [visibles]);
+
+  // L'échéance que viserait le palier affiché aujourd'hui : son groupe est déplié d'office,
+  // c'est celui sur lequel on travaille.
+  const echeanceCible = onglet === 'lots' ? '' : datesPalier(reference, palierConf(onglet).jours).applicable;
+
+  // Un choix explicite gagne ; sinon on déplie dès qu'un filtre est actif — recherche OU
+  // état d'envoi — sans quoi on demanderait « les 16 non livrés » pour n'obtenir que six
+  // en-têtes repliés. Et par défaut, l'échéance du jour : c'est celle sur laquelle on
+  // travaille.
+  const estOuvert = (d: string) =>
+    ouverts[d] ?? (recherche.trim() !== '' || vue !== 'tout' || d === echeanceCible);
+  const toutOuvrir = (o: boolean) =>
+    setOuverts(Object.fromEntries(groupes.map(g => [g.date, o])));
 
   // Remet le filtre d'échéance à zéro quand on change d'onglet (il ne veut plus rien dire).
-  useEffect(() => { setEcheance(''); }, [onglet]);
+  useEffect(() => { setEcheance(''); setVue('tout'); setOuverts({}); }, [onglet]);
 
   function exporterCsv() {
     const entetes = ['Palier', 'Nom', 'Prenom', 'Telephone', 'Email', 'Fin de location',
@@ -1043,13 +1199,21 @@ export function FacturationView({ user }: { user: AuthUser }) {
         </div>
       ) : (
         <>
+          <StatsEnvoi lignes={duPalier} vue={vue} onVue={setVue} />
+
           {/* Filtres */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
             <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
               <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--muted)', pointerEvents: 'none' }} />
               <input value={recherche} onChange={e => setRecherche(e.target.value)}
-                placeholder="Nom, téléphone, email, n° prescription…"
-                style={{ ...champStyle, paddingLeft: 30, width: 280 }} />
+                placeholder="Nom, prénom, téléphone, email, n° prescription…"
+                style={{ ...champStyle, paddingLeft: 30, width: 300 }} />
+              {recherche !== '' && (
+                <button onClick={() => setRecherche('')} title="Effacer la recherche"
+                  style={{ position: 'absolute', right: 6, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex', padding: 2 }}>
+                  <X size={13} />
+                </button>
+              )}
             </div>
             {echeances.length > 1 && (
               <select value={echeance} onChange={e => setEcheance(e.target.value)} style={{ ...champStyle, cursor: 'pointer' }}>
@@ -1058,8 +1222,18 @@ export function FacturationView({ user }: { user: AuthUser }) {
               </select>
             )}
             <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              {visibles.length} ligne{visibles.length > 1 ? 's' : ''}
+              {visibles.length} ligne{visibles.length > 1 ? 's' : ''} · {groupes.length} échéance{groupes.length > 1 ? 's' : ''}
             </span>
+            {groupes.length > 1 && (
+              <>
+                <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => toutOuvrir(true)}>
+                  Tout déplier
+                </button>
+                <button className="btn btn-ghost" style={{ padding: '5px 10px', fontSize: 12 }} onClick={() => toutOuvrir(false)}>
+                  Tout replier
+                </button>
+              </>
+            )}
             <button className="btn btn-ghost" onClick={exporterCsv} disabled={visibles.length === 0}
               title="Exporter la liste affichée en CSV — pratique pour recouper avec un export ORTHOP"
               style={{ marginLeft: 'auto' }}>
@@ -1067,51 +1241,88 @@ export function FacturationView({ user }: { user: AuthUser }) {
             </button>
           </div>
 
-          <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead><tr>
-                  {['Patiente', 'Téléphone', 'Email', 'Fin de location', 'SMS', 'Mail', 'Prescription', 'Extrait le'].map(h => <th key={h} style={thStyle}>{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {visibles.length === 0 ? (
-                    <tr><td colSpan={8} style={{ ...tdStyle, textAlign: 'center', color: 'var(--muted)', padding: '30px 10px' }}>
-                      {lignes.some(f => f.palier === onglet)
-                        ? 'Aucune ligne ne correspond à ce filtre.'
-                        : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
-                    </td></tr>
-                  ) : visibles.map(f => (
-                    <tr key={f.id}>
-                      <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                        {[f.nom, f.prenom].filter(Boolean).join(' ') || '—'}
-                      </td>
-                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                          <Phone size={11} style={{ color: 'var(--muted)' }} />
-                          {f.telephone || '—'}
-                        </span>
-                      </td>
-                      <td style={{ ...tdStyle, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {f.email
-                          ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                              <Mail size={11} style={{ color: 'var(--muted)', flexShrink: 0 }} />{f.email}
-                            </span>
-                          : <span style={{ color: 'var(--muted)' }}>—</span>}
-                      </td>
-                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}
-                          title={`Applicable du ${formatDate(f.date_echeance)} dans ORTHOP`}>
-                        {formatDate(finDeLocation(f.date_echeance))}
-                      </td>
-                      <td style={tdStyle}><SmsChip f={f} /></td>
-                      <td style={tdStyle}><MailChip f={f} /></td>
-                      <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{f.orthop_prescription || '—'}</td>
-                      <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(f.importe_le ?? null)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {groupes.length === 0 ? (
+            <div style={{ background: 'white', border: '1px solid var(--border)', borderRadius: 12,
+                          padding: '30px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
+              {duPalier.length > 0
+                ? 'Aucune ligne ne correspond à ce filtre.'
+                : `Aucune ligne ${palierConf(onglet).label} — lancez une extraction ci-dessus.`}
             </div>
-          </div>
+          ) : groupes.map(g => {
+            const ouvert = estOuvert(g.date);
+            const cible = g.date === echeanceCible;
+            const conf = palierConf(onglet);
+            return (
+              <div key={g.date} style={{
+                background: 'white', border: `1px solid ${cible ? conf.bord : 'var(--border)'}`,
+                borderRadius: 12, marginBottom: 10, overflow: 'hidden',
+              }}>
+                <button
+                  onClick={() => setOuverts(o => ({ ...o, [g.date]: !ouvert }))}
+                  title={`Applicable du ${formatDate(g.date)} dans ORTHOP`}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px',
+                    background: cible ? conf.fond : '#f8fafc', border: 'none',
+                    borderBottom: ouvert ? '1px solid var(--border)' : 'none',
+                    cursor: 'pointer', textAlign: 'left', flexWrap: 'wrap', fontFamily: 'inherit',
+                  }}>
+                  {ouvert
+                    ? <ChevronDown size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+                    : <ChevronRight size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />}
+                  <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 13.5, fontWeight: 800, color: 'var(--text)' }}>
+                    {formatDateLongue(finDeLocation(g.date)) || '(échéance inconnue)'}
+                  </span>
+                  {cible && <Chip texte="échéance visée aujourd’hui" couleur={conf.teinte} fond="white" bord={conf.bord} />}
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''}
+                  </span>
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                    {g.resume.map(r => (
+                      <Chip key={r.libelle} texte={`${r.n} ${r.libelle}`} couleur={r.couleur} fond={r.fond} bord={r.bord} />
+                    ))}
+                  </span>
+                </button>
+
+                {ouvert && (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead><tr>
+                        {/* Pas de colonne « Fin de location » : elle est dans l'en-tête du groupe. */}
+                        {['Patiente', 'Téléphone', 'Email', 'SMS', 'Mail', 'Prescription', 'Extrait le']
+                          .map(h => <th key={h} style={thStyle}>{h}</th>)}
+                      </tr></thead>
+                      <tbody>
+                        {g.lignes.map(f => (
+                          <tr key={f.id}>
+                            <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                              {[f.nom, f.prenom].filter(Boolean).join(' ') || '—'}
+                            </td>
+                            <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                <Phone size={11} style={{ color: 'var(--muted)' }} />
+                                {f.telephone || '—'}
+                              </span>
+                            </td>
+                            <td style={{ ...tdStyle, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {f.email
+                                ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                    <Mail size={11} style={{ color: 'var(--muted)', flexShrink: 0 }} />{f.email}
+                                  </span>
+                                : <span style={{ color: 'var(--muted)' }}>—</span>}
+                            </td>
+                            <td style={tdStyle}><SmsChip f={f} /></td>
+                            <td style={tdStyle}><MailChip f={f} /></td>
+                            <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{f.orthop_prescription || '—'}</td>
+                            <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{formatDateTime(f.importe_le ?? null)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </>
       )}
 
