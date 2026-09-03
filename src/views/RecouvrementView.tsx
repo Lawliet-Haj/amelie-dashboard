@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { read, utils } from 'xlsx';
 import {
   Upload, RefreshCw, Edit2, X, CheckCircle, FileText, AlertCircle,
@@ -7,9 +7,9 @@ import {
   UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle, CloudDownload, Send,
 } from 'lucide-react';
 import type { AuthUser, Relance, RelancesStats, BatchGroup } from '../types';
-import { Portal } from '../lib/Portal';
+import { GroupedList, type GroupeEntete, type Ton, Portal } from '../ui';
 import {
-  aujourdhuiIso, formatDate, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
+  aujourdhuiIso, formatDate, formatDateLongue, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
 } from '../lib/format';
 
 const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
@@ -1223,6 +1223,23 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [vue, setVue]                       = useState<VueFiltre>('a_traiter');
   // Date observée par le bandeau d'activité — par défaut aujourd'hui (heure de Paris).
   const [jourFiltre, setJourFiltre]         = useState(() => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }));
+  /**
+   * Change d'axe ET remet le filtre rapide sur l'état naturel du nouvel axe.
+   *
+   * ⚠️ Sans ça, l'axe « échéance » héritait de « À traiter » — un compteur à 0 depuis que
+   * le contact écrit suffit — et paraissait donc VIDE alors qu'il contenait 947 lignes.
+   * Chaque axe s'ouvre sur son intention : triage pour le jour, revue complète pour
+   * l'échéance.
+   */
+  const changerAxe = (a: 'jour' | 'echeance') => {
+    setAxe(a);
+    setVue(a === 'echeance' ? 'tout' : 'a_traiter');
+    setFilterStatut('');
+  };
+
+  /** Axe de lecture : la console d'appel d'une journée, ou la revue par échéance. */
+  const [axe, setAxe]                       = useState<'jour' | 'echeance'>('jour');
+  const [ouvertsEch, setOuvertsEch]         = useState<Record<string, boolean>>({});
   const [search, setSearch]                 = useState('');
   const [sortByPriority, setSortByPriority] = useState(false);
   const [successMsg, setSuccessMsg]         = useState('');
@@ -1270,10 +1287,12 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
    *
    * `jourFiltre` vide = aucune restriction de date (bouton « toutes dates »).
    */
-  const scope = !jourFiltre ? relances : relances.filter(r => {
+  // ⚠️ L'axe « échéance » ignore volontairement le cadrage par journée : une échéance se
+  // lit sur toute sa durée de vie, pas sur un jour d'appel.
+  const scope = axe === 'echeance' ? relances : (!jourFiltre ? relances : relances.filter(r => {
     const jour = jourLocal(r.dernier_appel);
     return jour ? jour === jourFiltre : jourFiltre === jourCourant;
-  });
+  }));
 
   const filtered = scope
     // La barre de filtres rapides pilote la liste ; le menu « Statut » affine en plus (ET).
@@ -1288,6 +1307,216 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       if (sortByPriority) return priorityScore(b) - priorityScore(a);
       return 0;
     });
+
+  /**
+   * Rendu d'une ligne de relance. ⚠️ FONCTION LOCALE, pas composant : elle referme une
+   * douzaine d'états de la vue (callingId, sendingId, selected, deleteConfirm, editTarget…).
+   * En faire un composant imposerait douze props sur du code en production, sans gain.
+   * Les DEUX axes de lecture l'utilisent, donc les lignes sont strictement identiques.
+   */
+  const ligneRelance = (r: Relance, i: number) => {
+                      const echeanceOld = r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert' && isEcheancePassed(r.date_echeance);
+                      const score = priorityScore(r);
+                      const isSelected = selected.has(r.id);
+                      const confirmingDelete = deleteConfirm === r.id;
+                      return (
+                        <tr key={r.id}
+                          style={{ borderBottom: i < filtered.length - 1 ? '1px solid #f1f5f9' : 'none', background: isSelected ? '#eff6ff' : 'transparent', borderLeft: `3px solid ${STATUT_CONFIG[r.statut]?.hex || '#e2e8f0'}` }}
+                          onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#f9fafb'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = isSelected ? '#eff6ff' : 'transparent'; }}>
+                          <td style={{ padding: '8px 10px', width: 32 }}>
+                            <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.id)}
+                              disabled={!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'}
+                              style={{ cursor: 'pointer', accentColor: '#6366f1' }} />
+                          </td>
+                          <td style={{ padding: '8px 6px', width: 36 }}>
+                            {score > 0 && (
+                              <div title={`Priorité ${score}`} style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center', width: 14 }}>
+                                {[7, 5, 3].map(threshold => (
+                                  <div key={threshold} style={{ width: 10, height: 3, borderRadius: 2, background: score >= threshold ? (threshold === 7 ? '#ef4444' : threshold === 5 ? '#f59e0b' : '#6366f1') : '#e2e8f0' }} />
+                                ))}
+                              </div>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px', fontWeight: 600, color: 'var(--text)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.nom || '—'}</td>
+                          <td style={{ padding: '8px 10px' }}>
+                            {r.telephone ? (
+                              <button onClick={() => setHistoryPhone(r.telephone!)} style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline dotted', display: 'flex', alignItems: 'center', gap: 4 }}>
+                                {r.telephone}
+                                <ChevronRight size={11} style={{ color: 'var(--muted)' }} />
+                              </button>
+                            ) : '—'}
+                          </td>
+                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
+                            <span style={{ color: echeanceOld ? '#dc2626' : 'var(--muted)', fontWeight: echeanceOld ? 700 : 400, fontSize: 12 }}>
+                              {echeanceOld ? '⚠ ' : ''}{formatDate(r.date_echeance)}
+                            </span>
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                              <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, fontFamily: 'Lexend,sans-serif', background: STATUT_CONFIG[r.statut]?.bg || '#f3f4f6', color: STATUT_CONFIG[r.statut]?.color || '#6b7280' }}>
+                                {r.statut}
+                              </span>
+                              {/* Le badge SMS et le badge « fixe » vivent désormais dans la colonne SMS. */}
+                              {r.ordonnance_deja_envoyee && (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                  <span title="La patiente dit avoir déjà envoyé son ordonnance — à vérifier" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fff7ed', color: '#b45309', border: '1px solid #fed7aa', whiteSpace: 'nowrap' }}>
+                                    📄 Dit avoir envoyé
+                                  </span>
+                                  <button onClick={() => markOrdoVerified(r)} title="Dossier contrôlé — retirer ce signalement" style={{ padding: '1px 7px', borderRadius: 9, fontSize: 10, fontWeight: 700, background: 'white', color: '#047857', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
+                                    Vérifié
+                                  </button>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                              <SmsChip r={r} />
+                              <MailChip r={r} />
+                              <VocalChip r={r} />
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: r.nb_tentatives > 0 ? 'var(--blue)' : 'var(--muted)', fontSize: 13, fontFamily: 'Lexend,sans-serif' }}>
+                            {r.nb_tentatives ?? 0}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
+                            {formatDateTime(r.dernier_appel)}
+                            {r.duree_sec ? <span style={{ fontSize: 10, marginLeft: 5, color: '#9ca3af' }}>{formatDuration(r.duree_sec)}</span> : null}
+                          </td>
+                          <td style={{ padding: '8px 10px', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)', fontSize: 12 }} title={r.resultat_ia || r.resultat || r.notes || ''}>
+                            {r.resultat_ia || r.resultat || r.notes || '—'}
+                          </td>
+                          <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
+                            <div style={{ display: 'flex', gap: 3 }}>
+                              {r.statut !== 'Non répondu' && (
+                                <button onClick={() => quickOutcome(r, 'Non répondu')} title="Non répondu" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #fde68a', background: '#fffbeb', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <PhoneOff size={12} style={{ color: '#92400e' }} />
+                                </button>
+                              )}
+                              {r.statut !== 'Répondeur' && (
+                                <button onClick={() => quickOutcome(r, 'Répondeur')} title="Répondeur" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #c4b5fd', background: '#f5f3ff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <Voicemail size={12} style={{ color: '#5b21b6' }} />
+                                </button>
+                              )}
+                              {r.statut !== 'Répondu SMS' && (
+                                <button onClick={() => quickOutcome(r, 'Répondu SMS')} title="Répondu SMS" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #6ee7b7', background: '#ecfdf5', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <UserCheck size={12} style={{ color: '#065f46' }} />
+                                </button>
+                              )}
+                              {r.statut !== 'Répondu transfert' && (
+                                <button onClick={() => quickOutcome(r, 'Répondu transfert')} title="Répondu transfert" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #a5f3fc', background: '#ecfeff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <ArrowRightCircle size={12} style={{ color: '#0e7490' }} />
+                                </button>
+                              )}
+                              {r.dernier_appel && (
+                                <button
+                                  onClick={() => r.transcript ? setTranscriptTarget(r) : undefined}
+                                  title={r.transcript ? 'Voir le transcript' : 'Transcript en cours de traitement…'}
+                                  style={{ width: 26, height: 26, borderRadius: 7, border: `1px solid ${r.transcript ? '#c7d2fe' : '#e5e7eb'}`, background: r.transcript ? '#eef2ff' : '#f9fafb', cursor: r.transcript ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: r.transcript ? 1 : 0.45 }}>
+                                  <MessageSquare size={12} style={{ color: r.transcript ? '#6366f1' : '#9ca3af' }} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
+                            <div style={{ display: 'flex', gap: 4 }}>
+                              <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 11px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.35)', whiteSpace: 'nowrap' }}>
+                                {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
+                                {callingId === r.id ? '…' : 'Appeler'}
+                              </button>
+                              {/* Envoi SMS + mail sans appel — pour les dossiers injoignables. */}
+                              <button
+                                onClick={() => handleSend(r)}
+                                disabled={sendingId === r.id || (!r.email && !r.telephone)}
+                                title={`Envoyer le SMS et le mail de relance à ${r.prenom || ''} ${r.nom || ''}`.trim() + ' — sans passer d’appel'}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 9px', background: sendingId === r.id ? '#fffbeb' : 'white', border: `1px solid ${sendingId === r.id ? '#fde68a' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, fontWeight: 600, color: sendingId === r.id ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: (!r.email && !r.telephone) ? 0.3 : 1, whiteSpace: 'nowrap' }}
+                              >
+                                {sendingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Send size={11} />}
+                              </button>
+                              <button onClick={() => setEditTarget(r)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '5px 8px', background: 'white', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 11.5, fontWeight: 500, color: '#64748b', cursor: 'pointer' }}>
+                                <Edit2 size={11} />
+                              </button>
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 8px' }}>
+                            {confirmingDelete ? (
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button onClick={() => handleDelete(r.id)} style={{ fontSize: 11, padding: '3px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', color: '#dc2626', fontWeight: 700 }}>Oui</button>
+                                <button onClick={() => setDeleteConfirm(null)} style={{ fontSize: 11, padding: '3px 8px', background: 'white', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--muted)' }}>Non</button>
+                              </div>
+                            ) : (
+                              <button onClick={() => setDeleteConfirm(r.id)} title="Supprimer" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', display: 'flex', padding: 4, borderRadius: 6, opacity: 0.7, transition: 'opacity .15s' }} onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}>
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+  };
+
+  /**
+   * Tableau opérationnel, partagé par les deux axes : mêmes colonnes, mêmes actions.
+   * Un axe qui montrerait moins obligerait à basculer sans arrêt entre les deux.
+   */
+  const tableauRelances = (rows: Relance[]) => (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e8edf2' }}>
+                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'SMS / Mail / Vocal', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
+                        <th key={i} style={{ padding: '11px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 10.5, color: '#64748b', letterSpacing: '.5px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(ligneRelance)}
+                  </tbody>
+                </table>
+              </div>
+  );
+
+  /**
+   * Regroupement par ÉCHÉANCE — le second axe de lecture.
+   *
+   * ⚠️ POURQUOI DEUX AXES ET NON UN FILTRE DE PLUS. « Appels du jour » répond à
+   * « qu'ai-je fait aujourd'hui » : c'est la console d'appel. « Par échéance » répond à
+   * « où en est ce dossier » : la base porte 13 échéances distinctes sur 947 lignes, et
+   * l'information n'était visible nulle part. Les mélanger rendait les compteurs ambigus.
+   *
+   * Ordre DÉCROISSANT : l'échéance la plus récente est celle qu'on traite.
+   */
+  const groupesEcheance = useMemo<{ date: string; lignes: Relance[]; puces: { texte: string; ton: Ton }[] }[]>(() => {
+    if (axe !== 'echeance') return [];
+    const m = new Map<string, Relance[]>();
+    for (const r of filtered) {
+      const k = r.date_echeance || '';
+      const arr = m.get(k);
+      if (arr) arr.push(r); else m.set(k, [r]);
+    }
+    return Array.from(m.entries())
+      .sort((x, y) => y[0].localeCompare(x[0]))
+      .map(([date, lg]) => {
+        // N'afficher que ce qui est NON VIDE : un groupe sain doit rester silencieux,
+        // un dossier en souffrance doit sauter aux yeux sans qu'on l'ouvre.
+        const aAppeler = lg.filter(r => r.statut === 'À appeler' || r.statut === 'Non répondu').length;
+        const ontParle = lg.filter(r => r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert').length;
+        const parEcrit = lg.filter(r => r.sms_statut === 'livre' || r.email_statut === 'livre'
+                                     || r.email_statut === 'ouvert' || r.email_statut === 'clique').length;
+        const enEchec  = lg.filter(r => !!r.echec_motif).length;
+        const puces: { texte: string; ton: Ton }[] = [];
+        if (aAppeler) puces.push({ texte: `${aAppeler} à appeler`, ton: 'attente' });
+        if (ontParle) puces.push({ texte: `${ontParle} ont parlé`, ton: 'ok' });
+        if (parEcrit) puces.push({ texte: `${parEcrit} joints par écrit`, ton: 'ok2' });
+        if (enEchec)  puces.push({ texte: `${enEchec} en échec`, ton: 'echec' });
+        return { date, lignes: lg, puces };
+      });
+  }, [axe, filtered]);
+
+  // Un choix explicite gagne ; sinon on déplie pendant une recherche (sans quoi on ne
+  // verrait pas ses résultats) et sur l'échéance du jour.
+  const estOuvertEch = (d: string) =>
+    ouvertsEch[d] ?? (search.trim() !== '' || d === jourCourant);
 
   const repondus = stats.repondu_sms + stats.repondu_transfert;
   const tauxRappel = stats.total > 0 ? Math.round((repondus / stats.total) * 100) : 0;
@@ -1570,7 +1799,34 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <>
           {/* ── Aujourd'hui : une seule ligne pour piloter la campagne en cours ── */}
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 12, boxShadow: 'var(--shadow-sm)' }}>
-            {/* Date observée : par défaut aujourd'hui, modifiable pour revoir une journée passée. */}
+            {/* ── Axe de lecture ──────────────────────────────────────────────────
+                ⚠️ Un SÉLECTEUR, pas un filtre de plus. « Appels du jour » répond à
+                « qu'ai-je fait aujourd'hui », « Par échéance » à « où en est ce dossier ».
+                Les mélanger rendait les compteurs ambigus. */}
+            <div style={{ display: 'flex', gap: 3, paddingRight: 14, marginRight: 14, borderRight: '1px solid #eef2f6' }}>
+              {([
+                { id: 'jour' as const,     libelle: 'Appels du jour', titre: "Ce qui a été fait un jour donné — la console d'appel" },
+                { id: 'echeance' as const, libelle: 'Par échéance',   titre: 'Où en est chaque dossier, toutes dates d’appel confondues' },
+              ]).map(o => {
+                const actif = axe === o.id;
+                return (
+                  <button key={o.id} onClick={() => changerAxe(o.id)} title={o.titre}
+                    style={{
+                      padding: '4px 10px', borderRadius: 7, cursor: 'pointer',
+                      fontSize: 'var(--fs-xs)', fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+                      background: actif ? 'var(--text)' : 'white',
+                      color: actif ? 'white' : 'var(--muted)',
+                      border: `1px solid ${actif ? 'var(--text)' : 'var(--border)'}`,
+                    }}>
+                    {o.libelle}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Le choix de journée n'a de sens que sur l'axe « appels du jour » : l'afficher
+                sur l'axe échéance laisserait croire qu'il filtre quelque chose. */}
+            {axe === 'jour' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingRight: 16, marginRight: 16, borderRight: '1px solid #eef2f6' }}>
               <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif' }}>
                 {!jourFiltre ? 'Toutes dates' : jourFiltre === jourCourant ? "Aujourd'hui" : 'Appels du'}
@@ -1595,6 +1851,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 {jourFiltre ? 'toutes dates' : 'une journée'}
               </button>
             </div>
+            )}
             {/* Chaque compteur est cliquable : il applique le filtre correspondant au tableau. */}
             {([
               { label: 'appelées',      value: jour.appeles,    color: '#334155', vue: 'tout' as VueFiltre,          statut: '' },
@@ -1770,6 +2027,28 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           </div>
 
           {/* ── Table ──────────────────────────────────────────────────────── */}
+          {/* Sur l'axe échéance, la liste groupée remplace le cadre unique : chaque groupe
+              porte son cadre, et son en-tête replié suffit à juger l'état du dossier. */}
+          {axe === 'echeance' && !loading && filtered.length > 0 ? (
+            <GroupedList
+              groupes={groupesEcheance.map((g): GroupeEntete => ({
+                cle: g.date,
+                titre: g.date ? formatDateLongue(g.date) : '(échéance inconnue)',
+                compte: `${g.lignes.length} patiente${g.lignes.length > 1 ? 's' : ''}`,
+                puces: g.puces,
+                marque: g.date === jourCourant ? 'échéance du jour' : undefined,
+                accent: g.date === jourCourant,
+                accentBord: 'var(--blue-mid)',
+                accentFond: 'var(--blue-faint)',
+              }))}
+              estOuvert={estOuvertEch}
+              onToggle={cle => setOuvertsEch(o => ({ ...o, [cle]: !estOuvertEch(cle) }))}
+              rendu={cle => {
+                const g = groupesEcheance.find(x => x.date === cle);
+                return g ? tableauRelances(g.lignes) : null;
+              }}
+            />
+          ) : (
           <div style={{ background: 'white', borderRadius: 14, border: '1px solid var(--border)', overflow: 'hidden', boxShadow: 'var(--shadow-sm)' }}>
             {loading ? (
               <div style={{ textAlign: 'center', padding: 60, color: 'var(--muted)' }}>
@@ -1783,161 +2062,10 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 {!filterStatut && !search && vue === 'a_traiter' && relances.length === 0 && <button className="btn btn-primary" onClick={() => setShowImport(true)} style={{ marginTop: 12 }}><Upload size={14} /> Importer</button>}
               </div>
             ) : (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ background: '#f8fafc', borderBottom: '2px solid #e8edf2' }}>
-                      {['', 'Pri.', 'Nom', 'Téléphone', 'Échéance', 'Statut', 'SMS / Mail / Vocal', 'Appels', 'Dernier appel', 'Résultat', '', '', ''].map((h, i) => (
-                        <th key={i} style={{ padding: '11px 10px', textAlign: 'left', fontFamily: 'Lexend,sans-serif', fontWeight: 700, fontSize: 10.5, color: '#64748b', letterSpacing: '.5px', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((r, i) => {
-                      const echeanceOld = r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert' && isEcheancePassed(r.date_echeance);
-                      const score = priorityScore(r);
-                      const isSelected = selected.has(r.id);
-                      const confirmingDelete = deleteConfirm === r.id;
-                      return (
-                        <tr key={r.id}
-                          style={{ borderBottom: i < filtered.length - 1 ? '1px solid #f1f5f9' : 'none', background: isSelected ? '#eff6ff' : 'transparent', borderLeft: `3px solid ${STATUT_CONFIG[r.statut]?.hex || '#e2e8f0'}` }}
-                          onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#f9fafb'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = isSelected ? '#eff6ff' : 'transparent'; }}>
-                          <td style={{ padding: '8px 10px', width: 32 }}>
-                            <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.id)}
-                              disabled={!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'}
-                              style={{ cursor: 'pointer', accentColor: '#6366f1' }} />
-                          </td>
-                          <td style={{ padding: '8px 6px', width: 36 }}>
-                            {score > 0 && (
-                              <div title={`Priorité ${score}`} style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center', width: 14 }}>
-                                {[7, 5, 3].map(threshold => (
-                                  <div key={threshold} style={{ width: 10, height: 3, borderRadius: 2, background: score >= threshold ? (threshold === 7 ? '#ef4444' : threshold === 5 ? '#f59e0b' : '#6366f1') : '#e2e8f0' }} />
-                                ))}
-                              </div>
-                            )}
-                          </td>
-                          <td style={{ padding: '8px 10px', fontWeight: 600, color: 'var(--text)', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.nom || '—'}</td>
-                          <td style={{ padding: '8px 10px' }}>
-                            {r.telephone ? (
-                              <button onClick={() => setHistoryPhone(r.telephone!)} style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--blue)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textDecoration: 'underline dotted', display: 'flex', alignItems: 'center', gap: 4 }}>
-                                {r.telephone}
-                                <ChevronRight size={11} style={{ color: 'var(--muted)' }} />
-                              </button>
-                            ) : '—'}
-                          </td>
-                          <td style={{ padding: '8px 10px', whiteSpace: 'nowrap' }}>
-                            <span style={{ color: echeanceOld ? '#dc2626' : 'var(--muted)', fontWeight: echeanceOld ? 700 : 400, fontSize: 12 }}>
-                              {echeanceOld ? '⚠ ' : ''}{formatDate(r.date_echeance)}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
-                              <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, fontFamily: 'Lexend,sans-serif', background: STATUT_CONFIG[r.statut]?.bg || '#f3f4f6', color: STATUT_CONFIG[r.statut]?.color || '#6b7280' }}>
-                                {r.statut}
-                              </span>
-                              {/* Le badge SMS et le badge « fixe » vivent désormais dans la colonne SMS. */}
-                              {r.ordonnance_deja_envoyee && (
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                                  <span title="La patiente dit avoir déjà envoyé son ordonnance — à vérifier" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fff7ed', color: '#b45309', border: '1px solid #fed7aa', whiteSpace: 'nowrap' }}>
-                                    📄 Dit avoir envoyé
-                                  </span>
-                                  <button onClick={() => markOrdoVerified(r)} title="Dossier contrôlé — retirer ce signalement" style={{ padding: '1px 7px', borderRadius: 9, fontSize: 10, fontWeight: 700, background: 'white', color: '#047857', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
-                                    Vérifié
-                                  </button>
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
-                              <SmsChip r={r} />
-                              <MailChip r={r} />
-                              <VocalChip r={r} />
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 10px', textAlign: 'center', fontWeight: 700, color: r.nb_tentatives > 0 ? 'var(--blue)' : 'var(--muted)', fontSize: 13, fontFamily: 'Lexend,sans-serif' }}>
-                            {r.nb_tentatives ?? 0}
-                          </td>
-                          <td style={{ padding: '8px 10px', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
-                            {formatDateTime(r.dernier_appel)}
-                            {r.duree_sec ? <span style={{ fontSize: 10, marginLeft: 5, color: '#9ca3af' }}>{formatDuration(r.duree_sec)}</span> : null}
-                          </td>
-                          <td style={{ padding: '8px 10px', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)', fontSize: 12 }} title={r.resultat_ia || r.resultat || r.notes || ''}>
-                            {r.resultat_ia || r.resultat || r.notes || '—'}
-                          </td>
-                          <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
-                            <div style={{ display: 'flex', gap: 3 }}>
-                              {r.statut !== 'Non répondu' && (
-                                <button onClick={() => quickOutcome(r, 'Non répondu')} title="Non répondu" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #fde68a', background: '#fffbeb', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  <PhoneOff size={12} style={{ color: '#92400e' }} />
-                                </button>
-                              )}
-                              {r.statut !== 'Répondeur' && (
-                                <button onClick={() => quickOutcome(r, 'Répondeur')} title="Répondeur" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #c4b5fd', background: '#f5f3ff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  <Voicemail size={12} style={{ color: '#5b21b6' }} />
-                                </button>
-                              )}
-                              {r.statut !== 'Répondu SMS' && (
-                                <button onClick={() => quickOutcome(r, 'Répondu SMS')} title="Répondu SMS" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #6ee7b7', background: '#ecfdf5', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  <UserCheck size={12} style={{ color: '#065f46' }} />
-                                </button>
-                              )}
-                              {r.statut !== 'Répondu transfert' && (
-                                <button onClick={() => quickOutcome(r, 'Répondu transfert')} title="Répondu transfert" style={{ width: 26, height: 26, borderRadius: 7, border: '1px solid #a5f3fc', background: '#ecfeff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                  <ArrowRightCircle size={12} style={{ color: '#0e7490' }} />
-                                </button>
-                              )}
-                              {r.dernier_appel && (
-                                <button
-                                  onClick={() => r.transcript ? setTranscriptTarget(r) : undefined}
-                                  title={r.transcript ? 'Voir le transcript' : 'Transcript en cours de traitement…'}
-                                  style={{ width: 26, height: 26, borderRadius: 7, border: `1px solid ${r.transcript ? '#c7d2fe' : '#e5e7eb'}`, background: r.transcript ? '#eef2ff' : '#f9fafb', cursor: r.transcript ? 'pointer' : 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: r.transcript ? 1 : 0.45 }}>
-                                  <MessageSquare size={12} style={{ color: r.transcript ? '#6366f1' : '#9ca3af' }} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
-                            <div style={{ display: 'flex', gap: 4 }}>
-                              <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 11px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.35)', whiteSpace: 'nowrap' }}>
-                                {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
-                                {callingId === r.id ? '…' : 'Appeler'}
-                              </button>
-                              {/* Envoi SMS + mail sans appel — pour les dossiers injoignables. */}
-                              <button
-                                onClick={() => handleSend(r)}
-                                disabled={sendingId === r.id || (!r.email && !r.telephone)}
-                                title={`Envoyer le SMS et le mail de relance à ${r.prenom || ''} ${r.nom || ''}`.trim() + ' — sans passer d’appel'}
-                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 9px', background: sendingId === r.id ? '#fffbeb' : 'white', border: `1px solid ${sendingId === r.id ? '#fde68a' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, fontWeight: 600, color: sendingId === r.id ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: (!r.email && !r.telephone) ? 0.3 : 1, whiteSpace: 'nowrap' }}
-                              >
-                                {sendingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Send size={11} />}
-                              </button>
-                              <button onClick={() => setEditTarget(r)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '5px 8px', background: 'white', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 11.5, fontWeight: 500, color: '#64748b', cursor: 'pointer' }}>
-                                <Edit2 size={11} />
-                              </button>
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 8px' }}>
-                            {confirmingDelete ? (
-                              <div style={{ display: 'flex', gap: 4 }}>
-                                <button onClick={() => handleDelete(r.id)} style={{ fontSize: 11, padding: '3px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer', color: '#dc2626', fontWeight: 700 }}>Oui</button>
-                                <button onClick={() => setDeleteConfirm(null)} style={{ fontSize: 11, padding: '3px 8px', background: 'white', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', color: 'var(--muted)' }}>Non</button>
-                              </div>
-                            ) : (
-                              <button onClick={() => setDeleteConfirm(r.id)} title="Supprimer" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fca5a5', display: 'flex', padding: 4, borderRadius: 6, opacity: 0.7, transition: 'opacity .15s' }} onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}>
-                                <Trash2 size={13} />
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              tableauRelances(filtered)
             )}
           </div>
+          )}
         </>
       )}
 
