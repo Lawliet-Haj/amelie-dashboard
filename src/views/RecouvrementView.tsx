@@ -1513,10 +1513,21 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       });
   }, [axe, filtered]);
 
-  // Un choix explicite gagne ; sinon on déplie pendant une recherche (sans quoi on ne
-  // verrait pas ses résultats) et sur l'échéance du jour.
+  /**
+   * Quel groupe est déplié.
+   *
+   * Un choix explicite gagne toujours. Sinon on déplie pendant une recherche (sans quoi on
+   * ne verrait pas ses résultats), sur l'échéance du jour, et À DÉFAUT sur la première du
+   * classement.
+   *
+   * ⚠️ Ce dernier repli n'est pas un détail : une échéance est une date de PRESCRIPTION,
+   * elle ne coïncide presque jamais avec aujourd'hui. Sans lui, l'axe s'ouvrait tous
+   * cadres repliés et paraissait VIDE alors qu'il contenait 947 lignes — constaté en
+   * production le lendemain de la mise en service.
+   */
+  const premiereEch = groupesEcheance[0]?.date;
   const estOuvertEch = (d: string) =>
-    ouvertsEch[d] ?? (search.trim() !== '' || d === jourCourant);
+    ouvertsEch[d] ?? (search.trim() !== '' || d === jourCourant || d === premiereEch);
 
   const repondus = stats.repondu_sms + stats.repondu_transfert;
   const tauxRappel = stats.total > 0 ? Math.round((repondus / stats.total) * 100) : 0;

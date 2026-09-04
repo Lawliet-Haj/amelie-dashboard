@@ -884,8 +884,11 @@ export function FacturationView({ user }: { user: AuthUser }) {
   // état d'envoi — sans quoi on demanderait « les 16 non livrés » pour n'obtenir que six
   // en-têtes repliés. Et par défaut, l'échéance du jour : c'est celle sur laquelle on
   // travaille.
+  // ⚠️ `groupes[0]?.date` en dernier repli : si aucune échéance ne correspond à la cible du
+  // jour (extraction pas encore passée, ou date de référence changée), tout serait replié et
+  // l'écran paraîtrait vide. Même défaut constaté sur le Recouvrement en production.
   const estOuvert = (d: string) =>
-    ouverts[d] ?? (recherche.trim() !== '' || vue !== 'tout' || d === echeanceCible);
+    ouverts[d] ?? (recherche.trim() !== '' || vue !== 'tout' || d === echeanceCible || d === groupes[0]?.date);
   const toutOuvrir = (o: boolean) =>
     setOuverts(Object.fromEntries(groupes.map(g => [g.date, o])));
 
