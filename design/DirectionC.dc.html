@@ -1,0 +1,103 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, sans-serif; background: #ffffff; color: #1a2b42; }
+    a { color: #2d7fc2; } a:hover { color: #1a5ea0; }
+    .lx { font-family: 'Lexend', 'DM Sans', system-ui, sans-serif; }
+  </style>
+</helmet>
+
+<div style="padding: 26px 28px; min-height: 620px; box-sizing: border-box">
+
+  <div style="margin-bottom: 6px">
+    <span class="lx" style="font-size: 11px; font-weight: 700; color: #7d95a8; text-transform: uppercase; letter-spacing: .5px">Direction C — esquisse</span>
+  </div>
+  <h2 class="lx" style="font-size: 19px; font-weight: 800; margin: 0 0 6px">Entonnoir de récupération</h2>
+  <p style="font-size: 12.5px; color: #55738c; margin: 0 0 18px; line-height: 1.5">
+    Le parcours lu comme une déperdition : combien de dossiers sortent à chaque étape,
+    et combien descendent jusqu’à la mise en demeure.
+  </p>
+
+  <div style="display: flex; flex-direction: column; gap: 3px; margin-bottom: 18px">
+    <sc-for list="{{barres}}" as="b" hint-placeholder-count="9">
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span class="lx" style="flex-shrink: 0; width: 40px; text-align: right; font-size: 11px; font-weight: 700; color: {{b.libelleCouleur}}">{{b.code}}</span>
+        <div style="flex-grow: 1; height: 26px; background: #f3f8fd; border-radius: 5px; position: relative; overflow: hidden">
+          <div style="{{b.remplissage}}"></div>
+        </div>
+        <span class="lx" style="flex-shrink: 0; width: 44px; font-size: 12px; font-weight: 700; color: {{b.libelleCouleur}}">{{b.n}}</span>
+        <span style="flex-shrink: 0; width: 96px; font-size: 11px; color: #7d95a8">{{b.sortie}}</span>
+      </div>
+    </sc-for>
+  </div>
+
+  <div style="border-top: 1px solid #d8e8f2; padding-top: 14px; display: flex; gap: 20px">
+    <div style="flex-grow: 1">
+      <div class="lx" style="font-size: 11px; font-weight: 700; color: #15803d; margin-bottom: 5px">Ce qu’elle apporte</div>
+      <p style="font-size: 12px; color: #334d65; margin: 0; line-height: 1.5">
+        Répond à une question que personne ne peut trancher aujourd’hui : à quelle étape
+        les patientes renvoient-elles leur ordonnance ? Utile pour décider s’il faut
+        vraiment neuf étapes.
+      </p>
+    </div>
+    <div style="flex-grow: 1">
+      <div class="lx" style="font-size: 11px; font-weight: 700; color: #b45309; margin-bottom: 5px">Ce qu’elle coûte</div>
+      <p style="font-size: 12px; color: #334d65; margin: 0; line-height: 1.5">
+        Ce n’est pas un écran de travail : on ne peut rien y faire. Et les cinq dernières
+        barres seront vides pendant des semaines, faute de données au-delà de J+13.
+      </p>
+    </div>
+  </div>
+
+  <p style="font-size: 11px; color: #7d95a8; margin: 14px 0 0; line-height: 1.5">
+    Barres grisées = étapes sans aucune donnée. Les chiffres J-30 à J+7 sont réels ; au-delà, ils sont figurés.
+  </p>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":700,"height":620}}'>
+class Component extends DCLogic {
+  renderVals() {
+    // J-30 a J+7 : chiffres reels du 2026-09-04. Au-dela : aucune donnee en base.
+    const brutes = [
+      ['J-30', 734, 'entrées', true],
+      ['J-15', 656, '− 78 servies', true],
+      ['J+1',  490, '− 166 servies', true],
+      ['J+7',  457, '− 33 servies', true],
+      ['J+14', 0, 'sans donnée', false],
+      ['J+21', 0, 'sans donnée', false],
+      ['J+30', 0, 'sans donnée', false],
+      ['J+33', 0, 'sans donnée', false],
+      ['J+40', 0, 'sans donnée', false],
+    ];
+    const max = 734;
+    return {
+      barres: brutes.map(b => {
+        const reel = b[3];
+        const pct = reel ? Math.round((b[1] / max) * 100) : 22;
+        return {
+          code: b[0],
+          n: reel ? String(b[1]) : '—',
+          sortie: b[2],
+          libelleCouleur: reel ? '#1a2b42' : '#a8bccc',
+          remplissage: 'position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px;'
+            + 'width: ' + pct + '%;'
+            + (reel
+                ? 'background: linear-gradient(90deg, #2d7fc2, #4a9dd4);'
+                : 'background: repeating-linear-gradient(45deg, #eef4f9, #eef4f9 5px, #f8fafc 5px, #f8fafc 10px);'),
+        };
+      }),
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -25,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Sortie generee du canevas de design (2,5 Mo : editeur minifie empaquete).
+# Les sources sont les *.dc.html et canvas.json a cote ; regenerer avec seed-canvas.mjs.
+design/parcours-de-relances.html

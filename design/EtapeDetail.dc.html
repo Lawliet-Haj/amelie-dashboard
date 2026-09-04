@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, sans-serif; background: #f0f5fa; color: #1a2b42; }
+    a { color: #2d7fc2; } a:hover { color: #1a5ea0; }
+    .lx { font-family: 'Lexend', 'DM Sans', system-ui, sans-serif; }
+    .th { padding: 9px 12px; text-align: left; font-size: 11px; font-weight: 700; color: #55738c;
+          text-transform: uppercase; letter-spacing: .3px; background: #f8fafc;
+          border-bottom: 1px solid #d8e8f2; white-space: nowrap; }
+    .td { padding: 9px 12px; font-size: 13px; color: #334d65; border-bottom: 1px solid #f3f8fd; }
+  </style>
+</helmet>
+
+<div style="padding: 22px 32px 24px; min-height: 900px; box-sizing: border-box">
+
+  <!-- Fil d'Ariane : on revient au parcours ------------------------------- -->
+  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px">
+    <a href="#" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; text-decoration: none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+      Parcours de relance
+    </a>
+    <span style="color: #cbd9e4">/</span>
+    <span style="font-size: 12.5px; color: #55738c">Relance 3 — J+1</span>
+  </div>
+
+  <!-- Bandeau de l'étape --------------------------------------------------- -->
+  <div style="background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 18px 22px; margin-bottom: 14px">
+    <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap">
+      <div style="flex-grow: 1; min-width: 0">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
+          <span class="lx" style="font-size: 20px; font-weight: 800">Relance 3 — J+1</span>
+          <span style="padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; color: #065f46; background: #ecfdf5; border: 1px solid #6ee7b7">active</span>
+        </div>
+        <p style="font-size: 13px; color: #334d65; margin: 0; line-height: 1.5">
+          Appel de l’agent IA puis SMS et mail selon l’issue. Cron de 12h30 à 13h55, dix appels par passage.
+        </p>
+      </div>
+      <div style="display: flex; gap: 8px">
+        <button style="padding: 8px 14px; border-radius: 9px; border: 1px solid #d8e8f2; background: #ffffff; font-family: 'Lexend', sans-serif; font-size: 12.5px; font-weight: 700; color: #334d65; cursor: pointer">
+          Extraire depuis ORTHOP
+        </button>
+        <button style="padding: 8px 14px; border-radius: 9px; border: none; background: #2d7fc2; color: #ffffff; font-family: 'Lexend', sans-serif; font-size: 12.5px; font-weight: 700; cursor: pointer">
+          Appeler les 16 restantes
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Statistiques d'envoi, cliquables ------------------------------------ -->
+  <div style="background: #ffffff; border: 1px solid #d8e8f2; border-radius: 12px; padding: 12px 16px; margin-bottom: 14px">
+    <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px">
+      <span style="font-size: 11px; font-weight: 700; color: #55738c; text-transform: uppercase; letter-spacing: .3px">Suivi de l’étape</span>
+      <span style="font-size: 12px; color: #55738c">490 dossiers à J+1</span>
+    </div>
+    <sc-for list="{{rangees}}" as="r" hint-placeholder-count="3">
+      <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 7px 0; border-top: 1px solid #f3f8fd">
+        <span class="lx" style="width: 62px; flex-shrink: 0; font-size: 12px; font-weight: 800">{{r.titre}}</span>
+        <sc-for list="{{r.puces}}" as="p" hint-placeholder-count="5">
+          <span style="{{p.style}}">{{p.libelle}} <strong style="font-family: 'Lexend', sans-serif">{{p.n}}</strong></span>
+        </sc-for>
+      </div>
+    </sc-for>
+  </div>
+
+  <!-- Barre d'outils -------------------------------------------------------- -->
+  <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap">
+    <div style="position: relative; display: flex; align-items: center">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#55738c" stroke-width="2.2" stroke-linecap="round" style="position: absolute; left: 10px"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path></svg>
+      <input placeholder="Nom, prénom, téléphone, email, n° prescription…" style="width: 320px; height: 32px; padding-left: 30px; border-radius: 8px; border: 1px solid #d8e8f2; font-size: 13px; font-family: inherit; color: #1a2b42; outline: none">
+    </div>
+    <span style="font-size: 12px; color: #55738c">490 lignes · 6 échéances</span>
+    <span style="margin-left: auto; display: flex; gap: 8px">
+      <button style="padding: 5px 10px; border-radius: 8px; border: 1px solid #d8e8f2; background: #ffffff; font-size: 12px; color: #334d65; cursor: pointer; font-family: inherit">Tout déplier</button>
+      <button style="padding: 5px 10px; border-radius: 8px; border: 1px solid #d8e8f2; background: #ffffff; font-size: 12px; color: #334d65; cursor: pointer; font-family: inherit">Exporter en CSV</button>
+    </span>
+  </div>
+
+  <!-- Groupes par échéance -------------------------------------------------- -->
+  <sc-for list="{{groupes}}" as="g" hint-placeholder-count="3">
+    <div style="background: #ffffff; border: 1px solid {{g.bord}}; border-radius: 12px; margin-bottom: 10px; overflow: hidden">
+      <div style="display: flex; align-items: center; gap: 12px; padding: 11px 16px; background: {{g.fond}}; flex-wrap: wrap; border-bottom: {{g.bordBas}}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#55738c" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="{{g.chevron}}"><path d="m6 9 6 6 6-6"></path></svg>
+        <span class="lx" style="font-size: 13px; font-weight: 800">{{g.titre}}</span>
+        <span style="font-size: 12px; color: #55738c">{{g.compte}}</span>
+        <span style="margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap">
+          <sc-for list="{{g.puces}}" as="p" hint-placeholder-count="3">
+            <span style="{{p.style}}">{{p.libelle}}</span>
+          </sc-for>
+        </span>
+      </div>
+
+      <sc-if value="{{g.ouvert}}" hint-placeholder-val="{{ true }}">
+        <table style="width: 100%; border-collapse: collapse">
+          <thead>
+            <tr>
+              <th class="th">Patiente</th>
+              <th class="th">Téléphone</th>
+              <th class="th">Parcours</th>
+              <th class="th">Statut</th>
+              <th class="th">Dernier appel</th>
+              <th class="th"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <sc-for list="{{g.lignes}}" as="l" hint-placeholder-count="4">
+              <tr>
+                <td class="td" style="font-weight: 600; white-space: nowrap; color: #1a2b42">{{l.nom}}</td>
+                <td class="td" style="white-space: nowrap">{{l.tel}}</td>
+                <td class="td">
+                  <span style="display: inline-flex; gap: 3px; align-items: center">
+                    <sc-for list="{{l.jalons}}" as="j" hint-placeholder-count="9">
+                      <span title="{{j.titre}}" style="{{j.style}}"></span>
+                    </sc-for>
+                  </span>
+                </td>
+                <td class="td"><span style="{{l.statutStyle}}">{{l.statut}}</span></td>
+                <td class="td" style="color: #55738c; font-size: 12px; white-space: nowrap">{{l.quand}}</td>
+                <td class="td" style="white-space: nowrap">
+                  <button style="padding: 5px 11px; border-radius: 8px; border: none; background: #2d7fc2; color: #ffffff; font-size: 12px; font-weight: 700; font-family: 'Lexend', sans-serif; cursor: pointer">Appeler</button>
+                </td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </sc-if>
+    </div>
+  </sc-for>
+
+  <p style="font-size: 11.5px; color: #7d95a8; margin: 14px 0 0; line-height: 1.5">
+    La colonne <strong style="color: #55738c">Parcours</strong> montre les neuf jalons : plein = franchi, creux = à venir, rouge = en échec. Un survol donne la date et le canal.
+  </p>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const puce = (fg, bg, bd) =>
+      'display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 999px;'
+      + 'font-size: 11px; font-weight: 600; white-space: nowrap;'
+      + 'color: ' + fg + '; background: ' + bg + '; border: 1px solid ' + bd + ';';
+    const chip = (fg, bg, bd) =>
+      'padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap;'
+      + 'color: ' + fg + '; background: ' + bg + '; border: 1px solid ' + bd + ';';
+
+    const OK = ['#065f46', '#ecfdf5', '#6ee7b7'];
+    const ATT = ['#92400e', '#fffbeb', '#fde68a'];
+    const ECH = ['#b91c1c', '#fef2f2', '#fecaca'];
+    const NEU = ['#55738c', '#f9fafb', '#e5e7eb'];
+    const ENC = ['#1d4ed8', '#eff6ff', '#bfdbfe'];
+
+    // Neuf jalons par patiente : c'est ce que le modele de donnees actuel ne sait PAS
+    // retenir (un seul sms_statut, un seul email_statut). Voir la note de remise.
+    const jalons = (franchis, echec) => {
+      const out = [];
+      for (let i = 1; i <= 9; i++) {
+        const fait = i <= franchis;
+        const rate = echec === i;
+        out.push({
+          titre: 'Relance ' + i,
+          style: 'width: 8px; height: 8px; border-radius: 999px;'
+            + (rate ? 'background: #b91c1c;'
+               : fait ? 'background: #2d7fc2;'
+               : 'background: #ffffff; border: 1px solid #cbd9e4;'),
+        });
+      }
+      return out;
+    };
+
+    const ligne = (nom, tel, franchis, echec, statut, ton, quand) => ({
+      nom, tel, quand, statut,
+      statutStyle: chip(ton[0], ton[1], ton[2]),
+      jalons: jalons(franchis, echec),
+    });
+
+    return {
+      rangees: [
+        { titre: 'Appel', puces: [
+          { libelle: 'à appeler', n: 16, style: puce.apply(null, ATT) },
+          { libelle: 'ont parlé', n: 27, style: puce.apply(null, OK) },
+          { libelle: 'messagerie', n: 57, style: puce.apply(null, NEU) },
+          { libelle: 'raccroché', n: 17, style: puce.apply(null, NEU) },
+          { libelle: 'en échec', n: 6, style: puce.apply(null, ECH) },
+        ] },
+        { titre: 'SMS', puces: [
+          { libelle: 'à envoyer', n: 0, style: puce.apply(null, ATT) },
+          { libelle: 'livrés', n: 471, style: puce.apply(null, OK) },
+          { libelle: 'non livrés', n: 13, style: puce.apply(null, ECH) },
+          { libelle: 'fixes', n: 6, style: puce.apply(null, NEU) },
+        ] },
+        { titre: 'Mail', puces: [
+          { libelle: 'à envoyer', n: 0, style: puce.apply(null, ATT) },
+          { libelle: 'livrés', n: 178, style: puce.apply(null, OK) },
+          { libelle: 'ouverts', n: 289, style: puce.apply(null, OK) },
+          { libelle: 'dont cliqués', n: 41, style: puce('#5b21b6', '#f5f3ff', '#c4b5fd') },
+          { libelle: 'non livrés', n: 2, style: puce.apply(null, ECH) },
+        ] },
+      ],
+      groupes: [
+        { titre: 'jeudi 3 septembre 2026', compte: '94 patientes', ouvert: true,
+          bord: '#4a9dd4', fond: '#f3f8fd', bordBas: '1px solid #d8e8f2',
+          chevron: '',
+          puces: [
+            { libelle: '6 à appeler', style: chip.apply(null, ATT) },
+            { libelle: '27 ont parlé', style: chip.apply(null, OK) },
+            { libelle: '91 joints par écrit', style: chip('#047857', '#f0fdf4', '#86efac') },
+          ],
+          lignes: [
+            ligne('Aubry Marine', '+33 6 24 39 63 89', 3, null, 'Répondu SMS', OK, "aujourd'hui 12:31"),
+            ligne('Adt Cécile', '+33 6 37 82 85 22', 3, null, 'Répondeur', NEU, "aujourd'hui 12:33"),
+            ligne('Bastian Andréa', '+33 6 30 84 69 49', 2, 3, 'À appeler', ATT, '—'),
+            ligne('Beaudonnat Andréa', '+33 6 12 44 87 03', 3, null, 'Raccroché', NEU, "aujourd'hui 12:36"),
+          ] },
+        { titre: 'mercredi 2 septembre 2026', compte: '81 patientes', ouvert: false,
+          bord: '#d8e8f2', fond: '#f8fafc', bordBas: 'none',
+          chevron: 'transform: rotate(-90deg)',
+          puces: [
+            { libelle: '8 à appeler', style: chip.apply(null, ATT) },
+            { libelle: '20 ont parlé', style: chip.apply(null, OK) },
+            { libelle: '8 en échec', style: chip.apply(null, ECH) },
+          ], lignes: [] },
+        { titre: 'mardi 1 septembre 2026', compte: '129 patientes', ouvert: false,
+          bord: '#d8e8f2', fond: '#f8fafc', bordBas: 'none',
+          chevron: 'transform: rotate(-90deg)',
+          puces: [
+            { libelle: '1 à appeler', style: chip.apply(null, ATT) },
+            { libelle: '27 ont parlé', style: chip.apply(null, OK) },
+            { libelle: '129 joints par écrit', style: chip('#047857', '#f0fdf4', '#86efac') },
+          ], lignes: [] },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

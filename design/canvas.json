@@ -1,0 +1,40 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Écrans" },
+    { "id": "page-2", "name": "Directions écartées" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "page": "page-1", "title": "Entrée — le parcours" },
+    { "file": "EtapeDetail.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 900, "page": "page-1", "title": "Une étape ouverte — J+1" },
+    { "file": "SuiviPatiente.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 900, "page": "page-1", "title": "Suivi d'une patiente" },
+    { "file": "DirectionB.dc.html", "x": 0, "y": 0, "w": 700, "h": 620, "page": "page-2", "title": "B — file de travail" },
+    { "file": "DirectionC.dc.html", "x": 800, "y": 0, "w": 700, "h": 620, "page": "page-2", "title": "C — entonnoir" }
+  ],
+  "annotations": [
+    {
+      "id": "prealable-donnees",
+      "x": 0,
+      "y": -230,
+      "w": 620,
+      "page": "page-1",
+      "text": "PRÉALABLE — le modèle de données ne sait pas retenir ce parcours.\n\n`relances` porte UN SEUL sms_statut et UN SEUL email_statut. Impossible d'y consigner « SMS 1, 2, 3, 4 » ni « Email 1 à 5 » : la colonne Parcours et l'écran de suivi demandent un journal par étape (une table relance_evenements, ou l'extension de call_history).\n\nL'étape elle-même se DÉDUIT de date_echeance (J+1, J+7, J+14…) : aucune colonne à ajouter pour ça."
+    },
+    {
+      "id": "etat-reel",
+      "x": 700,
+      "y": -230,
+      "w": 620,
+      "page": "page-1",
+      "text": "CHIFFRES RÉELS, mesurés en base le 4 septembre 2026.\n\nJ-30 734 · J-15 656 · J+1 490 · J+7 457 · au-delà : RIEN.\n\nLe parcours n'existe donc opérationnellement que jusqu'à J+13. Les étapes J+14 à J+40 sont dessinées « prévues » — bordure pointillée, compteur à tiret — pour qu'un écran plein de cases vides ne passe pas pour une panne."
+    },
+    {
+      "id": "pourquoi-a",
+      "x": 0,
+      "y": -170,
+      "w": 620,
+      "page": "page-2",
+      "text": "Ces deux directions ont été écartées, mais elles répondent à de vraies questions.\n\nB pourrait revenir comme raccourci « ma journée » DANS l'écran retenu.\nC est une vue de pilotage : elle vaudra le coup quand il y aura des données au-delà de J+13."
+    }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

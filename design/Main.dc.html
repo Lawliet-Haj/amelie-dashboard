@@ -1,0 +1,398 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, sans-serif; background: #f0f5fa; color: #1a2b42; }
+    a { color: #2d7fc2; } a:hover { color: #1a5ea0; }
+    .lx { font-family: 'Lexend', 'DM Sans', system-ui, sans-serif; }
+  </style>
+</helmet>
+
+<div style="padding: 28px 32px 24px; min-height: 900px; box-sizing: border-box">
+
+  <!-- En-tête ------------------------------------------------------------- -->
+  <div style="display: flex; align-items: flex-end; gap: 16px; margin-bottom: 20px">
+    <div style="flex-grow: 1">
+      <h1 class="lx" style="font-size: 24px; font-weight: 800; margin: 0 0 4px">Recouvrement</h1>
+      <p style="font-size: 13px; color: #55738c; margin: 0">
+        Parcours de relance des ordonnances manquantes — choisissez l’étape à traiter.
+      </p>
+    </div>
+    <div style="display: flex; gap: 24px; align-items: flex-end">
+      <div style="text-align: right">
+        <div class="lx" style="font-size: 24px; font-weight: 800; line-height: 1">947</div>
+        <div style="font-size: 11px; color: #55738c; text-transform: uppercase; letter-spacing: .3px; font-weight: 700">dossiers en cours</div>
+      </div>
+      <div style="text-align: right">
+        <div class="lx" style="font-size: 24px; font-weight: 800; line-height: 1; color: #047857">944</div>
+        <div style="font-size: 11px; color: #55738c; text-transform: uppercase; letter-spacing: .3px; font-weight: 700">joints par écrit</div>
+      </div>
+      <div style="text-align: right">
+        <div class="lx" style="font-size: 24px; font-weight: 800; line-height: 1; color: #b91c1c">28</div>
+        <div style="font-size: 11px; color: #55738c; text-transform: uppercase; letter-spacing: .3px; font-weight: 700">aucun contact</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Le parcours : 9 étapes, cliquables ---------------------------------- -->
+  <div style="display: flex; gap: 8px; margin-bottom: 20px">
+    <sc-for list="{{etapes}}" as="e" hint-placeholder-count="9">
+      <button onClick="{{e.choisir}}" style="{{e.tuileStyle}}">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px">
+          <span class="lx" style="font-size: 13px; font-weight: 800; color: {{e.codeCouleur}}">{{e.code}}</span>
+          <span style="display: inline-flex; align-items: center; gap: 4px">
+            <sc-if value="{{e.verrou}}" hint-placeholder-val="{{ true }}">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="{{e.verrouCouleur}}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            </sc-if>
+            <span style="font-size: 10px; color: #7d95a8; font-weight: 600">{{e.num}}</span>
+          </span>
+        </div>
+        <div class="lx" style="font-size: 22px; font-weight: 800; line-height: 1; color: {{e.nombreCouleur}}">{{e.nTexte}}</div>
+        <div style="font-size: 10px; color: #7d95a8; margin-top: 2px">{{e.nLegende}}</div>
+        <div style="display: flex; gap: 4px; margin-top: 10px; flex-wrap: wrap">
+          <sc-for list="{{e.canaux}}" as="c" hint-placeholder-count="3">
+            <span style="{{c.style}}">{{c.libelle}}</span>
+          </sc-for>
+        </div>
+        <sc-if value="{{e.aFaire}}" hint-placeholder-val="{{ true }}">
+          <div style="margin-top: 9px; padding: 3px 7px; border-radius: 999px; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 10px; font-weight: 700; text-align: center">
+            {{e.aFaireTexte}}
+          </div>
+        </sc-if>
+      </button>
+    </sc-for>
+  </div>
+
+  <!-- Détail de l'étape choisie -------------------------------------------- -->
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px">
+
+    <!-- Ce que fait l'étape -->
+    <div style="grid-column: span 2; background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 20px 22px">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px">
+        <span class="lx" style="font-size: 18px; font-weight: 800">{{sel.titre}}</span>
+        <span style="{{sel.etatStyle}}">{{sel.etatLibelle}}</span>
+      </div>
+      <p style="font-size: 13px; color: #334d65; margin: 0 0 18px; line-height: 1.5">{{sel.resume}}</p>
+
+      <div style="display: flex; flex-direction: column; gap: 10px">
+        <sc-for list="{{sel.actions}}" as="a" hint-placeholder-count="3">
+          <div style="display: flex; align-items: flex-start; gap: 12px; padding: 11px 13px; border-radius: 10px; background: {{a.fond}}; border: 1px solid {{a.bord}}">
+            <span style="flex-shrink: 0; width: 22px; height: 22px; border-radius: 6px; background: #ffffff; border: 1px solid {{a.bord}}; display: flex; align-items: center; justify-content: center">
+              <sc-if value="{{a.estSms}}" hint-placeholder-val="{{ true }}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{a.teinte}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+              </sc-if>
+              <sc-if value="{{a.estMail}}" hint-placeholder-val="{{ true }}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{a.teinte}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><path d="m22 7-10 5L2 7"></path></svg>
+              </sc-if>
+              <sc-if value="{{a.estAppel}}" hint-placeholder-val="{{ true }}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{a.teinte}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+              </sc-if>
+              <sc-if value="{{a.estCourrier}}" hint-placeholder-val="{{ true }}">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{{a.teinte}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path><path d="M9 15h6"></path></svg>
+              </sc-if>
+            </span>
+            <div style="flex-grow: 1">
+              <div style="font-size: 13px; font-weight: 600; color: {{a.texteCouleur}}; text-decoration: {{a.barre}}">{{a.libelle}}</div>
+              <div style="font-size: 11.5px; color: #55738c; margin-top: 2px">{{a.detail}}</div>
+            </div>
+            <span style="{{a.pastilleStyle}}">{{a.pastille}}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- À faire maintenant -->
+    <div style="display: flex; flex-direction: column; gap: 16px">
+      <div style="background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 18px 20px">
+        <div style="font-size: 11px; font-weight: 700; color: #55738c; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 12px">
+          {{sel.panneauTitre}}
+        </div>
+
+        <!-- Trois panneaux mutuellement exclusifs, selon QUI porte l'étape. -->
+        <sc-if value="{{sel.agissable}}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div class="lx" style="font-size: 32px; font-weight: 800; line-height: 1; color: #92400e">{{sel.aFaireN}}</div>
+            <p style="font-size: 12.5px; color: #334d65; margin: 6px 0 16px; line-height: 1.5">
+              patientes sans aucun contact abouti — ni voix, ni SMS livré, ni mail lu.
+            </p>
+            <button style="width: 100%; padding: 10px 14px; border-radius: 10px; border: none; background: #2d7fc2; color: #ffffff; font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 7px">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+              Ouvrir la liste
+            </button>
+            <div style="margin-top: 10px; font-size: 11px; color: #7d95a8; line-height: 1.5">
+              Le cron passe à 12h30. Ce bouton sert aux cas à traiter à la main.
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{sel.verrouille}}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div style="display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-radius: 10px; background: #f9fafb; border: 1px solid #e5e7eb; margin-bottom: 14px">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7d95a8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink: 0"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+              <span style="font-size: 12.5px; color: #334d65; line-height: 1.45">Étape portée par le menu <strong>Facturation</strong>. Votre rôle la voit, mais n’y agit pas.</span>
+            </div>
+            <div class="lx" style="font-size: 32px; font-weight: 800; line-height: 1">{{sel.nTexte}}</div>
+            <p style="font-size: 12.5px; color: #334d65; margin: 6px 0 16px; line-height: 1.5">
+              dossiers à ce palier. Le nombre vient d’un service de <strong>comptage seul</strong> :
+              aucune donnée patiente ne franchit la cloison entre les deux rôles.
+            </p>
+            <button style="width: 100%; padding: 10px 14px; border-radius: 10px; border: 1px solid #d8e8f2; background: #ffffff; color: #334d65; font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 700; cursor: pointer">
+              Ouvrir dans Facturation
+            </button>
+            <div style="margin-top: 10px; font-size: 11px; color: #7d95a8; line-height: 1.5">
+              Accessible seulement à un compte facturation, ou admin.
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{sel.dormante}}" hint-placeholder-val="{{ true }}">
+          <div>
+            <div style="display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-radius: 10px; background: #f9fafb; border: 1px dashed #cbd9e4; margin-bottom: 14px">
+              <span style="font-size: 12.5px; color: #334d65; line-height: 1.45">Étape définie, <strong>pas encore branchée</strong>. Aucun dossier ne l’a atteinte : le parcours ne dépasse pas J+13 aujourd’hui.</span>
+            </div>
+            <button style="width: 100%; padding: 10px 14px; border-radius: 10px; border: 1px solid #d8e8f2; background: #ffffff; color: #334d65; font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 700; cursor: pointer">
+              Voir ce qu’il reste à brancher
+            </button>
+          </div>
+        </sc-if>
+      </div>
+
+      <div style="background: #f3f8fd; border: 1px solid #d8e8f2; border-radius: 14px; padding: 16px 18px">
+        <div style="font-size: 11px; font-weight: 700; color: #55738c; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 10px">
+          Agent qui appelle
+        </div>
+        <div class="lx" style="font-size: 14px; font-weight: 700; margin-bottom: 3px">{{sel.agent}}</div>
+        <div style="font-size: 11.5px; color: #55738c; font-family: ui-monospace, monospace">{{sel.agentId}}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Légende -------------------------------------------------------------- -->
+  <div style="display: flex; gap: 26px; align-items: center; margin-top: 22px; padding-top: 16px; border-top: 1px solid #d8e8f2">
+    <div style="display: flex; align-items: center; gap: 7px">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: #15803d"></span>
+      <span style="font-size: 12px; color: #334d65">Automatique — Brevo (SMS / mail)</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 7px">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: #1d4ed8"></span>
+      <span style="font-size: 12px; color: #334d65">Automatique — agent IA (appel)</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 7px">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: #b45309"></span>
+      <span style="font-size: 12px; color: #334d65">Manuel / semi-automatique</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 7px">
+      <span style="width: 9px; height: 9px; border-radius: 999px; border: 1px dashed #7d95a8"></span>
+      <span style="font-size: 12px; color: #334d65">Étape prévue, pas encore branchée</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 7px">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a8bccc" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+      <span style="font-size: 12px; color: #334d65">Portée par le menu Facturation</span>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    // L'etape ouverte. J+1 par defaut : c'est celle qui porte le travail du jour.
+    this.state = { sel: 'r3' };
+  }
+
+  donnees() {
+    // Volumes REELS mesures en base le 2026-09-04. Les etapes R5 a R9 n'ont aucune
+    // donnee : le module ne va pas au-dela de J+13, elles sont donc « prevues ».
+    return [
+      { id: 'r1', code: 'J-30', num: 'R1', n: 734, etat: 'facturation',
+        canaux: ['sms', 'mail'], aFaire: 0,
+        titre: 'Relance 1 — J-30, premier avertissement',
+        resume: 'Prevention avant l’echeance. Cette etape vit dans le menu Facturation : le role recouvrement n’y a pas acces, elle est montree ici pour situer le parcours.',
+        agent: 'Aucun appel a ce palier', agentId: 'Brevo seul',
+        actions: [
+          { c: 'sms',  libelle: 'SMS (1) via Brevo', detail: 'Automatique a 12h30 — 1 segment, 149 caracteres', pastille: 'actif' },
+          { c: 'mail', libelle: 'Email (1) via Brevo', detail: 'Modele 337, depuis no-reply@tire-lait-express.fr', pastille: 'actif' },
+        ] },
+      { id: 'r2', code: 'J-15', num: 'R2', n: 656, etat: 'facturation',
+        canaux: ['sms', 'mail'], aFaire: 0,
+        titre: 'Relance 2 — J-15, rappel rapproche',
+        resume: 'Second avertissement preventif, quinze jours avant la fin de location. Egalement porte par le menu Facturation.',
+        agent: 'Aucun appel a ce palier', agentId: 'Brevo seul',
+        actions: [
+          { c: 'sms',  libelle: 'SMS (2) via Brevo', detail: 'Automatique a 12h30 — prefixe « RAPPEL »', pastille: 'actif' },
+          { c: 'mail', libelle: 'Email (2) via Brevo', detail: 'Modele 336, depuis no-reply@tire-lait-express.fr', pastille: 'actif' },
+        ] },
+      { id: 'r3', code: 'J+1', num: 'R3', n: 490, etat: 'actif',
+        canaux: ['appel', 'sms', 'mail'], aFaire: 16,
+        titre: 'Relance 3 — J+1, premier appel',
+        resume: 'L’ordonnance est echue depuis la veille. L’agent IA appelle, puis W3 envoie le SMS et le mail selon l’issue de l’appel.',
+        agent: 'Amelie Sortant — Recouvrement', agentId: 'agent_7401kshp7rpr…',
+        actions: [
+          { c: 'appel', libelle: 'Appel (1) par l’agent IA', detail: 'Cron 12h30 → 13h55, dix appels par passage', pastille: 'actif' },
+          { c: 'sms',   libelle: 'SMS (1) apres l’appel', detail: 'Envoye par W3 selon l’issue — jamais aux numeros fixes', pastille: 'actif' },
+          { c: 'mail',  libelle: 'Email (3) via Brevo', detail: 'Modele 353 — part apres CHAQUE appel, fixes inclus', pastille: 'actif' },
+        ] },
+      { id: 'r4', code: 'J+7', num: 'R4', n: 457, etat: 'actif',
+        canaux: ['appel', 'sms'], aFaire: 12,
+        titre: 'Relance 4 — J+7 a J+10, second appel',
+        resume: 'Deuxieme tentative vocale pour les dossiers restes sans contact abouti. Meme agent, meme creneau.',
+        agent: 'Amelie Sortant — Recouvrement', agentId: 'agent_7401kshp7rpr…',
+        actions: [
+          { c: 'appel', libelle: 'Appel (2) par l’agent IA', detail: 'Automatique a 12h30', pastille: 'actif' },
+          { c: 'sms',   libelle: 'SMS (2) apres l’appel', detail: 'Suit l’appel, selon l’issue', pastille: 'actif' },
+        ] },
+      { id: 'r5', code: 'J+14', num: 'R5', n: 0, etat: 'prevu',
+        canaux: ['mail', 'appel'], aFaire: 0,
+        titre: 'Relance 5 — J+14, bascule vers le contentieux',
+        resume: 'Le ton change : le mail part desormais de contentieux@. Un troisieme appel suit. Un nouvel agent IA sera a creer pour ce palier.',
+        agent: 'Agent IA a creer — ton « contentieux »', agentId: 'non branche',
+        actions: [
+          { c: 'sms',   libelle: 'SMS (3) via Brevo', detail: 'Retire du parcours', pastille: 'retire', barre: true },
+          { c: 'mail',  libelle: 'Email (4) via Brevo', detail: 'Depuis contentieux@tire-lait-express.fr', pastille: 'a creer' },
+          { c: 'appel', libelle: 'Appel (3) par l’agent IA', detail: 'Suivi du SMS 3 — automatique a 12h30', pastille: 'a creer' },
+        ] },
+      { id: 'r6', code: 'J+21', num: 'R6', n: 0, etat: 'manuel',
+        canaux: ['appel', 'mail'], aFaire: 0,
+        titre: 'Relance 6 — J+21, intervention humaine',
+        resume: 'Premiere etape ou une conseillere reprend la main. Le mail reste automatique.',
+        agent: 'Conseillere — appel manuel', agentId: 'pas d’agent IA',
+        actions: [
+          { c: 'appel', libelle: 'Appel manuel par l’equipe', detail: 'A declencher depuis la liste', pastille: 'manuel' },
+          { c: 'mail',  libelle: 'Email (5) via Brevo', detail: 'Depuis contentieux@tire-lait-express.fr', pastille: 'a creer' },
+        ] },
+      { id: 'r7', code: 'J+30', num: 'R7', n: 0, etat: 'manuel',
+        canaux: ['courrier'], aFaire: 0,
+        titre: 'Relance 7 — J+30, bascule ORG vers LTTC',
+        resume: 'Changement de dossier dans l’outil metier. Etape de validation, sans envoi vers la patiente.',
+        agent: 'Validation humaine', agentId: 'aucun envoi',
+        actions: [
+          { c: 'courrier', libelle: 'Bascule ORG → LTTC', detail: 'Manuel — validation par l’equipe', pastille: 'manuel' },
+        ] },
+      { id: 'r8', code: 'J+33', num: 'R8', n: 0, etat: 'manuel',
+        canaux: ['courrier'], aFaire: 0,
+        titre: 'Relance 8 — J+33, lettre recommandee',
+        resume: 'Lettre recommandee electronique qualifiee, valeur juridique eIDAS. Declenchee par l’equipe, envoyee par le prestataire.',
+        agent: 'AR24 ou Maileva', agentId: 'semi-automatique',
+        actions: [
+          { c: 'courrier', libelle: 'LRE eIDAS via AR24 ou Maileva', detail: 'Semi-automatique — declenchement humain', pastille: 'a creer' },
+        ] },
+      { id: 'r9', code: 'J+40', num: 'R9', n: 0, etat: 'prevu',
+        canaux: ['sms'], aFaire: 0,
+        titre: 'Relance 9 — J+40, mise en demeure',
+        resume: 'Derniere etape avant cloture. Le dossier est ensuite clos ou transmis au contentieux.',
+        agent: 'Brevo + suivi humain', agentId: 'non branche',
+        actions: [
+          { c: 'sms',      libelle: 'SMS (4) — mise en demeure', detail: 'Automatique via Brevo', pastille: 'a creer' },
+          { c: 'courrier', libelle: 'Encaissement sous 48 h (cheques)', detail: 'Suivi manuel', pastille: 'manuel' },
+        ] },
+    ];
+  }
+
+  renderVals() {
+    const CANAL = {
+      sms:      { libelle: 'SMS',     teinte: '#15803d', fond: '#ecfdf5', bord: '#6ee7b7' },
+      mail:     { libelle: 'Mail',    teinte: '#15803d', fond: '#ecfdf5', bord: '#6ee7b7' },
+      appel:    { libelle: 'Appel',   teinte: '#1d4ed8', fond: '#eff6ff', bord: '#bfdbfe' },
+      courrier: { libelle: 'Courrier',teinte: '#b45309', fond: '#fffbeb', bord: '#fde68a' },
+    };
+    const ETAT = {
+      actif:       { libelle: 'active',        fg: '#065f46', bg: '#ecfdf5', bd: '#6ee7b7' },
+      prevu:       { libelle: 'prevue',        fg: '#55738c', bg: '#f9fafb', bd: '#e5e7eb' },
+      manuel:      { libelle: 'manuelle',      fg: '#92400e', bg: '#fffbeb', bd: '#fde68a' },
+      facturation: { libelle: 'Facturation',   fg: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
+    };
+    const puce = (fg, bg, bd) =>
+      'padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap;'
+      + 'color: ' + fg + '; background: ' + bg + '; border: 1px solid ' + bd + ';';
+
+    const brutes = this.donnees();
+    const sel = brutes.find(e => e.id === this.state.sel) || brutes[0];
+
+    const etapes = brutes.map(e => {
+      const choisi = e.id === sel.id;
+      const prevu = e.etat === 'prevu' || e.etat === 'manuel';
+      return {
+        code: e.code,
+        num: e.num,
+        nTexte: e.n > 0 ? String(e.n) : '—',
+        nLegende: e.n > 0 ? 'dossiers' : 'pas encore',
+        codeCouleur: choisi ? '#ffffff' : e.etat === 'facturation' ? '#1d4ed8' : '#1a2b42',
+        nombreCouleur: choisi ? '#ffffff' : e.n > 0 ? '#1a2b42' : '#7d95a8',
+        aFaire: e.aFaire > 0,
+        aFaireTexte: e.aFaire + ' a traiter',
+        verrou: e.etat === 'facturation',
+        verrouCouleur: choisi ? 'rgba(255,255,255,.75)' : '#a8bccc',
+        canaux: e.canaux.map(c => ({
+          libelle: CANAL[c].libelle,
+          style: puce(choisi ? '#ffffff' : CANAL[c].teinte,
+                      choisi ? 'rgba(255,255,255,.14)' : CANAL[c].fond,
+                      choisi ? 'rgba(255,255,255,.28)' : CANAL[c].bord),
+        })),
+        tuileStyle:
+          'flex-grow: 1; flex-basis: 0; min-width: 0; text-align: left; cursor: pointer;'
+          + 'padding: 13px 13px 14px; border-radius: 12px; font-family: inherit;'
+          + (choisi
+              ? 'background: #1a2b42; border: 1px solid #1a2b42; box-shadow: 0 4px 14px rgba(26,43,66,.22);'
+              : 'background: #ffffff; border: 1px '
+                + (prevu ? 'dashed #cbd9e4' : 'solid #d8e8f2') + ';')
+          + (prevu && !choisi ? 'opacity: .78;' : ''),
+        choisir: () => this.setState({ sel: e.id }),
+      };
+    });
+
+    const etat = ETAT[sel.etat];
+    return {
+      etapes,
+      sel: {
+        titre: sel.titre,
+        nTexte: sel.n > 0 ? String(sel.n) : '—',
+        aFaireN: String(sel.aFaire),
+        // Trois panneaux mutuellement exclusifs, selon QUI porte l'etape.
+        agissable: sel.etat === 'actif',
+        verrouille: sel.etat === 'facturation',
+        dormante: sel.etat === 'prevu' || sel.etat === 'manuel',
+        panneauTitre: sel.etat === 'actif' ? 'À faire sur cette étape'
+                    : sel.etat === 'facturation' ? 'Portée par un autre module'
+                    : 'Étape non branchée',
+        resume: sel.resume,
+        agent: sel.agent,
+        agentId: sel.agentId,
+        etatLibelle: etat.libelle,
+        etatStyle: puce(etat.fg, etat.bg, etat.bd),
+        actions: sel.actions.map(a => {
+          const c = CANAL[a.c];
+          const barre = a.barre === true;
+          return {
+            libelle: a.libelle,
+            detail: a.detail,
+            fond: barre ? '#f9fafb' : c.fond,
+            bord: barre ? '#e5e7eb' : c.bord,
+            teinte: barre ? '#7d95a8' : c.teinte,
+            texteCouleur: barre ? '#7d95a8' : '#1a2b42',
+            barre: barre ? 'line-through' : 'none',
+            pastille: a.pastille,
+            pastilleStyle: a.pastille === 'actif' ? puce('#065f46', '#ffffff', '#6ee7b7')
+                         : a.pastille === 'manuel' ? puce('#92400e', '#ffffff', '#fde68a')
+                         : a.pastille === 'retire' ? puce('#7d95a8', '#ffffff', '#e5e7eb')
+                         : puce('#55738c', '#ffffff', '#cbd9e4'),
+            estSms: a.c === 'sms',
+            estMail: a.c === 'mail',
+            estAppel: a.c === 'appel',
+            estCourrier: a.c === 'courrier',
+          };
+        }),
+      },
+    };
+  }
+}
+</script>
+</body>
+</html>

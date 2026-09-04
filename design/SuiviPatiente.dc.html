@@ -1,0 +1,209 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, sans-serif; background: #f0f5fa; color: #1a2b42; }
+    a { color: #2d7fc2; } a:hover { color: #1a5ea0; }
+    .lx { font-family: 'Lexend', 'DM Sans', system-ui, sans-serif; }
+  </style>
+</helmet>
+
+<div style="padding: 22px 32px 24px; min-height: 900px; box-sizing: border-box">
+
+  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px">
+    <a href="#" style="display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; text-decoration: none">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"></path></svg>
+      Relance 3 — J+1
+    </a>
+    <span style="color: #cbd9e4">/</span>
+    <span style="font-size: 12.5px; color: #55738c">Aubry Marine</span>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px">
+
+    <!-- Le parcours de la patiente ---------------------------------------- -->
+    <div style="grid-column: span 2; background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 22px 24px">
+      <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 3px">
+        <h1 class="lx" style="font-size: 20px; font-weight: 800; margin: 0">Aubry Marine</h1>
+        <span style="padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; color: #065f46; background: #ecfdf5; border: 1px solid #6ee7b7">jointe — a parlé</span>
+      </div>
+      <p style="font-size: 12.5px; color: #55738c; margin: 0 0 20px">
+        Ordonnance échue le 3 septembre 2026 · actuellement à l’étape <strong style="color: #334d65">J+1</strong>
+      </p>
+
+      <div style="display: flex; flex-direction: column">
+        <sc-for list="{{etapes}}" as="e" hint-placeholder-count="9">
+          <div style="display: flex; gap: 14px">
+            <!-- Rail vertical -->
+            <div style="flex-shrink: 0; width: 26px; display: flex; flex-direction: column; align-items: center">
+              <span style="{{e.pointStyle}}"></span>
+              <sc-if value="{{e.pasDernier}}" hint-placeholder-val="{{ true }}">
+                <span style="{{e.traitStyle}}"></span>
+              </sc-if>
+            </div>
+
+            <!-- Contenu de l'étape -->
+            <div style="flex-grow: 1; min-width: 0; padding-bottom: {{e.espace}}">
+              <div style="display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap">
+                <span class="lx" style="font-size: 13px; font-weight: 800; color: {{e.titreCouleur}}">{{e.titre}}</span>
+                <span style="font-size: 11.5px; color: #7d95a8">{{e.quand}}</span>
+                <span style="{{e.etatStyle}}">{{e.etat}}</span>
+              </div>
+              <sc-if value="{{e.aDesLignes}}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 7px">
+                  <sc-for list="{{e.faits}}" as="f" hint-placeholder-count="3">
+                    <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #334d65">
+                      <span style="{{f.puceStyle}}">{{f.canal}}</span>
+                      <span style="color: {{f.couleur}}">{{f.texte}}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- Colonne de droite -------------------------------------------------- -->
+    <div style="display: flex; flex-direction: column; gap: 16px">
+      <div style="background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 18px 20px">
+        <div style="font-size: 11px; font-weight: 700; color: #55738c; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 12px">Dossier</div>
+        <sc-for list="{{fiche}}" as="f" hint-placeholder-count="5">
+          <div style="display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid #f3f8fd">
+            <span style="font-size: 12.5px; color: #55738c">{{f.cle}}</span>
+            <span style="font-size: 12.5px; font-weight: 600; text-align: right">{{f.valeur}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="background: #ffffff; border: 1px solid #d8e8f2; border-radius: 14px; padding: 18px 20px; flex-grow: 1">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px">
+          <span style="font-size: 11px; font-weight: 700; color: #55738c; text-transform: uppercase; letter-spacing: .3px">Dernier appel</span>
+          <span style="font-size: 11px; color: #7d95a8">45 s · positif</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <sc-for list="{{transcript}}" as="t" hint-placeholder-count="4">
+            <div style="{{t.bulleStyle}}">
+              <div style="font-size: 10px; font-weight: 700; color: {{t.auteurCouleur}}; margin-bottom: 2px">{{t.auteur}}</div>
+              <div style="font-size: 12.5px; line-height: 1.45; color: #1a2b42">{{t.texte}}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <button style="padding: 10px 14px; border-radius: 10px; border: 1px solid #d8e8f2; background: #ffffff; font-family: 'Lexend', sans-serif; font-size: 13px; font-weight: 700; color: #334d65; cursor: pointer">
+        Voir les 3 appels de ce dossier
+      </button>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const chip = (fg, bg, bd) =>
+      'padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700; white-space: nowrap;'
+      + 'color: ' + fg + '; background: ' + bg + '; border: 1px solid ' + bd + ';';
+    const canalPuce = (fg, bg, bd) =>
+      'flex-shrink: 0; width: 46px; text-align: center; padding: 1px 0; border-radius: 999px;'
+      + 'font-size: 10px; font-weight: 700;'
+      + 'color: ' + fg + '; background: ' + bg + '; border: 1px solid ' + bd + ';';
+
+    const VERT = canalPuce('#15803d', '#ecfdf5', '#6ee7b7');
+    const BLEU = canalPuce('#1d4ed8', '#eff6ff', '#bfdbfe');
+    const BRUN = canalPuce('#b45309', '#fffbeb', '#fde68a');
+
+    const brutes = [
+      { titre: 'R1 — J-30', quand: '4 août 2026', etat: 'fait', faits: [
+        { canal: 'SMS', p: VERT, texte: 'livré à 12h30' },
+        { canal: 'Mail', p: VERT, texte: 'ouvert le 5 août' },
+      ] },
+      { titre: 'R2 — J-15', quand: '19 août 2026', etat: 'fait', faits: [
+        { canal: 'SMS', p: VERT, texte: 'livré à 12h30' },
+        { canal: 'Mail', p: VERT, texte: 'cliqué le 19 août', fort: true },
+      ] },
+      { titre: 'R3 — J+1', quand: "aujourd'hui 12h31", etat: 'en cours', faits: [
+        { canal: 'Appel', p: BLEU, texte: 'a parlé — 45 s, sentiment positif' },
+        { canal: 'SMS', p: VERT, texte: 'livré à 12h33' },
+        { canal: 'Mail', p: VERT, texte: 'ouvert à 14h02' },
+      ] },
+      { titre: 'R4 — J+7', quand: 'prévu le 10 septembre', etat: 'a venir', faits: [] },
+      { titre: 'R5 — J+14', quand: 'prévu le 17 septembre', etat: 'non branche', faits: [] },
+      { titre: 'R6 — J+21', quand: '', etat: 'non branche', faits: [] },
+      { titre: 'R7 — J+30', quand: '', etat: 'non branche', faits: [] },
+      { titre: 'R8 — J+33', quand: '', etat: 'non branche', faits: [] },
+      { titre: 'R9 — J+40', quand: '', etat: 'non branche', faits: [] },
+    ];
+
+    const ETAT = {
+      'fait':         { libelle: 'franchie',      s: chip('#065f46', '#ecfdf5', '#6ee7b7'), point: '#2d7fc2', titre: '#1a2b42' },
+      'en cours':     { libelle: 'étape en cours',s: chip('#1d4ed8', '#eff6ff', '#bfdbfe'), point: '#2d7fc2', titre: '#1a2b42' },
+      'a venir':      { libelle: 'à venir',       s: chip('#55738c', '#f9fafb', '#e5e7eb'), point: '#ffffff', titre: '#55738c' },
+      'non branche':  { libelle: 'non branchée',  s: chip('#7d95a8', '#f9fafb', '#e5e7eb'), point: '#ffffff', titre: '#7d95a8' },
+    };
+
+    const etapes = brutes.map((e, i) => {
+      const et = ETAT[e.etat];
+      const courant = e.etat === 'en cours';
+      return {
+        titre: e.titre,
+        quand: e.quand,
+        etat: et.libelle,
+        etatStyle: et.s,
+        titreCouleur: et.titre,
+        aDesLignes: e.faits.length > 0,
+        pasDernier: i < brutes.length - 1,
+        espace: e.faits.length > 0 ? '18px' : '10px',
+        pointStyle: 'width: 13px; height: 13px; border-radius: 999px; flex-shrink: 0;'
+          + 'background: ' + et.point + ';'
+          + 'border: 2px solid ' + (et.point === '#ffffff' ? '#cbd9e4' : et.point) + ';'
+          + (courant ? 'box-shadow: 0 0 0 4px rgba(45,127,194,.16);' : ''),
+        traitStyle: 'flex-grow: 1; width: 2px; min-height: 22px; margin: 3px 0;'
+          + 'background: ' + (e.etat === 'fait' || courant ? '#bfdbfe' : '#eef4f9') + ';',
+        faits: e.faits.map(f => ({
+          canal: f.canal,
+          puceStyle: f.p,
+          texte: f.texte,
+          couleur: f.fort ? '#5b21b6' : '#334d65',
+        })),
+      };
+    });
+
+    return {
+      etapes,
+      fiche: [
+        { cle: 'Échéance', valeur: '3 septembre 2026' },
+        { cle: 'Téléphone', valeur: '+33 6 24 39 63 89' },
+        { cle: 'Email', valeur: 'm.aubry@example.fr' },
+        { cle: 'Prescription ORTHOP', valeur: '345824' },
+        { cle: 'Appels passés', valeur: '3 sur 5' },
+      ],
+      transcript: [
+        { auteur: 'Amélie', texte: 'Bonjour, Amélie de Tire-Lait Express. Votre ordonnance est arrivée à échéance…',
+          bulleStyle: 'padding: 9px 11px; border-radius: 10px 10px 10px 3px; background: #f3f8fd; border: 1px solid #e6f2fa;',
+          auteurCouleur: '#2d7fc2' },
+        { auteur: 'Patiente', texte: 'Ah oui, je dois la renvoyer, c’est ça ?',
+          bulleStyle: 'padding: 9px 11px; border-radius: 10px 10px 3px 10px; background: #f8fafc; border: 1px solid #eef4f9; margin-left: 18px;',
+          auteurCouleur: '#55738c' },
+        { auteur: 'Amélie', texte: 'Exactement. Je vais vous envoyer un SMS avec le lien vers notre chatbot…',
+          bulleStyle: 'padding: 9px 11px; border-radius: 10px 10px 10px 3px; background: #f3f8fd; border: 1px solid #e6f2fa;',
+          auteurCouleur: '#2d7fc2' },
+        { auteur: 'Patiente', texte: 'Très bien, merci beaucoup.',
+          bulleStyle: 'padding: 9px 11px; border-radius: 10px 10px 3px 10px; background: #f8fafc; border: 1px solid #eef4f9; margin-left: 18px;',
+          auteurCouleur: '#55738c' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
