@@ -121,6 +121,17 @@ export interface Relance {
   dernier_echec?: string | null;
   // Patiente a signalé pendant l'appel avoir déjà envoyé son ordonnance (détecté par W3) — à vérifier
   ordonnance_deja_envoyee?: boolean | null;
+  // ── SORTIE DU PARCOURS DE RELANCES ────────────────────────────────────────────
+  // L'ordonnance a été renouvelée. Constaté DANS ORTHOP — la prescription disparaît de
+  // l'écran « Demande de renouvellement » — et nulle part ailleurs : un SMS livré ou un
+  // mail cliqué ne prouve rien. C'est la SEULE condition de sortie absolue ; les autres
+  // règles d'arrêt (statut, contact écrit) sont internes à un rail.
+  resolu_le?: string | null;
+  // ⚠️ Une ligne SANS numéro de prescription ne pourra JAMAIS être déclarée résolue. Les
+  // 153 lignes de la cohorte Excel du 25/08 sont dans ce cas, et elles sont toutes déjà
+  // jointes par écrit : ce ne sont pas des dossiers en retard, ce sont des dossiers sans
+  // suivi ORTHOP. Elles sortent par le plafond de 5 tentatives, pas par le signal.
+  orthop_prescription?: string | null;
 }
 
 export interface BatchGroup {

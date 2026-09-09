@@ -87,6 +87,23 @@ export function decalerJours(iso: string, jours: number): string {
   return d.toISOString().substring(0, 10);
 }
 
+/**
+ * Nombre de jours calendaires entre deux dates ISO (`b - a`). Negatif si `b` precede `a`.
+ *
+ * Sert a situer une relance dans le parcours : `ecartJours(date_echeance, aujourdhui)`
+ * donne le J+N du dossier, donc son rail (voir `src/lib/rails.ts`).
+ *
+ * ⚠️ Passe par MIDI UTC, exactement comme `decalerJours` ci-dessus. Partir de minuit
+ * fait franchir la frontiere du jour selon le fuseau et l'heure d'ete : c'est ce qui avait
+ * fait reculer toutes les echeances d'un jour lors de l'import Excel d'aout.
+ */
+export function ecartJours(a: string, b: string): number {
+  const da = new Date(String(a).slice(0, 10) + 'T12:00:00Z');
+  const db = new Date(String(b).slice(0, 10) + 'T12:00:00Z');
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return NaN;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
+
 export function isEcheancePassed(s: string | null) {
   if (!s) return false;
   try { return new Date(s + 'T00:00:00') < new Date(); } catch { return false; }

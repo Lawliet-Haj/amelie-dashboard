@@ -13,4 +13,5 @@ export { StatsBar, type VuePuce, type RangeeStats } from './StatsBar';
 export { GroupedList, type GroupeEntete } from './GroupedList';
 export { DataTable, thStyle, tdStyle, tdDiscret } from './DataTable';
 export { SearchInput } from './SearchInput';
+export { CanalPuce } from './CanalPuce';
 export { Portal } from '../lib/Portal';

@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { read, utils } from 'xlsx';
+import { ParcoursRails } from './ParcoursRails';
+import { railParCode, lignesDuRail, etapeSuivante, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
+import type { SondeRail } from './ParcoursRails';
+
+/** Les quatre axes de lecture du module. Voir l'etat `axe` plus bas. */
+type Axe = 'parcours' | 'rail' | 'jour' | 'echeance';
 import {
   Upload, RefreshCw, Edit2, X, CheckCircle, FileText, AlertCircle,
   Phone, TrendingUp, PhoneCall, CheckSquare, Trash2, Download,
@@ -7,9 +13,9 @@ import {
   UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle, CloudDownload, Send,
 } from 'lucide-react';
 import type { AuthUser, Relance, RelancesStats, BatchGroup } from '../types';
-import { GroupedList, type GroupeEntete, type Ton, Portal } from '../ui';
+import { GroupedList, type GroupeEntete, type Ton, Chip, Portal } from '../ui';
 import {
-  aujourdhuiIso, formatDate, formatDateLongue, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
+  aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
 } from '../lib/format';
 
 const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
@@ -261,12 +267,13 @@ export interface OrthopResult {
  * le délai d'attente généreux. L'opération est idempotente : relancer la même date
  * n'insère rien de nouveau (index unique sur le n° de prescription ORTHOP).
  */
-async function extractOrthop(token: string, date: string): Promise<OrthopResult> {
+async function extractOrthop(token: string, date: string, dryRun = false): Promise<OrthopResult> {
   try {
     const r = await fetch(`${API_BASE}/webhook/orthop-extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ date }),
+      // `dry_run` interroge ORTHOP SANS RIEN INSERER : c'est le mode « sonde » du parcours.
+      body: JSON.stringify(dryRun ? { date, dry_run: true } : { date }),
       signal: AbortSignal.timeout(180000),
     });
     if (!r.ok) return { ok: false, erreur: `Le serveur a répondu ${r.status}` };
@@ -1231,14 +1238,119 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
    * Chaque axe s'ouvre sur son intention : triage pour le jour, revue complète pour
    * l'échéance.
    */
-  const changerAxe = (a: 'jour' | 'echeance') => {
+  const changerAxe = (a: Axe) => {
     setAxe(a);
-    setVue(a === 'echeance' ? 'tout' : 'a_traiter');
+    // Le rail s'ouvre en revue complete : il est deja borne par sa fenetre, et un filtre
+    // « A traiter » par-dessus donnerait un ecran vide sur les rails deja servis.
+    setVue(a === 'jour' ? 'a_traiter' : 'tout');
     setFilterStatut('');
   };
 
-  /** Axe de lecture : la console d'appel d'une journée, ou la revue par échéance. */
-  const [axe, setAxe]                       = useState<'jour' | 'echeance'>('jour');
+  /**
+   * Axe de lecture. Quatre entrees, et `parcours` est celle par DEFAUT : on entre par la
+   * question « quelle etape dois-je traiter ? », pas par une liste de mille lignes.
+   *   parcours — les neuf rails, l'ecran d'entree
+   *   rail     — la liste d'UN rail, ouverte depuis le parcours
+   *   jour     — la console d'appel d'une journee
+   *   echeance — la revue par date d'echeance
+   */
+  const [axe, setAxe]                       = useState<Axe>('parcours');
+  /** Quel rail la vue `rail` montre. Conserve quand on revient au parcours. */
+  const [railActif, setRailActif]           = useState('R3');
+  /** Le libelle du rail ouvert sert d'etiquette a son onglet : « J+7 » plutot que « Rail ». */
+  const railLibelle = railParCode(railActif)?.libelle ?? 'Rail';
+  /**
+   * Portee de la liste d'un rail. Par DEFAUT le jour exact de l'etape : c'est le travail
+   * programme du jour, et c'est ce que la tuile annonce.
+   *
+   * ⚠️ Les deux autres portees ne sont pas du confort. Une etape est un jour precis, donc
+   * 81 % du stock actif (761 dossiers sur 940, mesure du 2026-09-04) n'est sur AUCUNE etape
+   * un jour donne. Sans moyen d'elargir, ces dossiers seraient inatteignables depuis le
+   * parcours.
+   */
+  const [porteeRail, setPorteeRail]         = useState<PorteeRail>('jour');
+  /**
+   * SONDE ORTHOP par etape — ce qu'ORTHOP detient pour la date de chaque rail, SANS RIEN
+   * IMPORTER (`dry_run`).
+   *
+   * ⚠️ Pourquoi ne pas simplement importer : les etapes R5 a R9 visent des echeances
+   * ANTERIEURES au demarrage de la campagne (22/08). Importer ces cohortes ferait entrer
+   * des patientes directement a leur rail arithmetique — jusqu'a la mise en demeure pour
+   * les plus anciennes — sans qu'elles aient jamais ete appelees ni relancees. La sonde
+   * les rend VISIBLES sans les faire entrer par la fin de l'echelle.
+   *
+   * ⚠️ Sept appels SOAP, ~40 s au total : declenche sur clic explicite, jamais au montage.
+   */
+  const [sondes, setSondes]                 = useState<Record<string, SondeRail>>({});
+  const [sondageEnCours, setSondageEnCours] = useState(false);
+
+  const sonderOrthop = useCallback(async () => {
+    if (sondageEnCours) return;
+    setSondageEnCours(true);
+    // ⚠️ `aujourdhuiIso()` et non `jourCourant` : cette variable est declaree PLUS BAS,
+    // et la citer dans le tableau de dependances la lirait dans sa zone morte (TDZ).
+    const auj = aujourdhuiIso();
+    const cibles = RAILS_RELANCES.map(r => ({ code: r.code, date: decalerJours(auj, -r.jour) }));
+    setSondes(Object.fromEntries(cibles.map(c => [c.code, { etat: 'chargement' as const }])));
+    // Concurrence 2 : ORTHOP est une API SOAP, on ne la matraque pas.
+    let i = 0;
+    const ouvrier = async () => {
+      while (i < cibles.length) {
+        const c = cibles[i++];
+        const res = await extractOrthop(user.token, c.date, true);
+        setSondes(prev => ({
+          ...prev,
+          [c.code]: res.ok
+            ? { etat: 'ok', date: c.date, dossiers: res.dossiers_trouves ?? 0,
+                eligibles: res.eligibles ?? 0, ecartes: res.ecartes_sans_ligne_a_renouveler ?? 0 }
+            : { etat: 'erreur', date: c.date, message: res.erreur || 'echec' },
+        }));
+      }
+    };
+    await Promise.all([ouvrier(), ouvrier()]);
+    setSondageEnCours(false);
+  }, [user.token, sondageEnCours]);
+
+  /**
+   * SELECTEUR D'AXE, rendu dans les deux branches de la vue.
+   *
+   * ⚠️ Il vivait a l'interieur du bloc `axe !== 'parcours'` : depuis l'ecran du parcours,
+   * « Appels du jour » et « Par échéance » etaient donc INATTEIGNABLES. Attrape par le
+   * compilateur, qui signalait que `axe === 'parcours'` ne pouvait jamais etre vrai a cet
+   * endroit — le symptome d'un bloc rendu au mauvais niveau.
+   *
+   * ⚠️ Un SELECTEUR, pas un filtre de plus. « Appels du jour » repond a « qu'ai-je fait
+   * aujourd'hui », « Par échéance » a « ou en est ce dossier », « Parcours » a « quelle
+   * etape dois-je traiter ». Les melanger rendait les compteurs ambigus.
+   *
+   * Fonction locale et non composant : elle referme `axe`, `railLibelle` et `changerAxe`,
+   * comme `ligneRelance` et `tableauRelances` plus bas. Meme raison, meme forme.
+   */
+  const barreAxes = () => (
+    <div style={{ display: 'flex', gap: 3 }}>
+      {([
+        { id: 'parcours' as const, libelle: axe === 'parcours' ? 'Parcours' : '\u2039 Parcours', titre: 'Les neuf étapes du parcours de relance — l’écran d’entrée' },
+        { id: 'rail' as const,     libelle: railLibelle,      titre: 'La liste de l’étape ouverte depuis le parcours' },
+        { id: 'jour' as const,     libelle: 'Appels du jour', titre: "Ce qui a été fait un jour donné — la console d'appel" },
+        { id: 'echeance' as const, libelle: 'Par échéance',   titre: 'Où en est chaque dossier, toutes dates d’appel confondues' },
+      ]).map(o => {
+        const on = axe === o.id;
+        return (
+          <button key={o.id} onClick={() => changerAxe(o.id)} title={o.titre}
+            style={{
+              padding: '4px 10px', borderRadius: 7, cursor: 'pointer',
+              fontSize: 'var(--fs-xs)', fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+              background: on ? 'var(--text)' : 'white',
+              color: on ? 'white' : 'var(--muted)',
+              border: `1px solid ${on ? 'var(--text)' : 'var(--border)'}`,
+            }}>
+            {o.libelle}
+          </button>
+        );
+      })}
+    </div>
+  );
+
   const [ouvertsEch, setOuvertsEch]         = useState<Record<string, boolean>>({});
   const [search, setSearch]                 = useState('');
   const [sortByPriority, setSortByPriority] = useState(false);
@@ -1289,10 +1401,18 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
    */
   // ⚠️ L'axe « échéance » ignore volontairement le cadrage par journée : une échéance se
   // lit sur toute sa durée de vie, pas sur un jour d'appel.
-  const scope = axe === 'echeance' ? relances : (!jourFiltre ? relances : relances.filter(r => {
-    const jour = jourLocal(r.dernier_appel);
-    return jour ? jour === jourFiltre : jourFiltre === jourCourant;
-  }));
+  //
+  // ⚠️ L'axe `rail` ecarte les dossiers SORTIS du parcours (ordonnance renouvelee). C'est
+  // ce qui fait coincider le tableau avec le compteur du bouton « Ouvrir la liste (N) » du
+  // parcours : afficher 462 lignes sous un bouton annoncant 423 se lit comme une erreur.
+  const railOuvert = railParCode(railActif);
+  const scope =
+      axe === 'rail'     ? (railOuvert ? lignesDuRail(relances, railOuvert, porteeRail, jourCourant) : [])
+    : axe === 'echeance' ? relances
+    : (!jourFiltre ? relances : relances.filter(r => {
+        const jour = jourLocal(r.dernier_appel);
+        return jour ? jour === jourFiltre : jourFiltre === jourCourant;
+      }));
 
   const filtered = scope
     // La barre de filtres rapides pilote la liste ; le menu « Statut » affine en plus (ET).
@@ -1805,35 +1925,93 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         />
       )}
 
-      {/* ── Relances tab ────────────────────────────────────────────────────── */}
-      {activeTab === 'relances' && (
+      {/* ── Relances · ECRAN D'ENTREE : le parcours ─────────────────────────── */}
+      {activeTab === 'relances' && axe === 'parcours' && (
         <>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--sp-2)', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 'var(--sp-4)', boxShadow: 'var(--shadow-sm)' }}>
+          {barreAxes()}
+          <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginLeft: 'var(--sp-2)' }}>
+            Choisissez une étape ci-dessous, ou passez à une vue opérationnelle.
+          </span>
+        </div>
+        <ParcoursRails
+          relances={relances}
+          aujourdhui={jourCourant}
+          sondes={sondes}
+          sondageEnCours={sondageEnCours}
+          onSonder={sonderOrthop}
+          onOuvrirRail={code => { setRailActif(code); setPorteeRail('jour'); changerAxe('rail'); }}
+        />
+        </>
+      )}
+
+      {/* ── Relances · les listes (rail, jour, échéance) ─────────────────────── */}
+      {activeTab === 'relances' && axe !== 'parcours' && (
+        <>
+          {/* ── Fil d'Ariane : le retour au parcours, et le contexte du rail ─────
+              ⚠️ L'onglet « Parcours » de la barre suffirait techniquement, mais il ne dit
+              PAS dans quelle etape on se trouve ni ce qu'elle fait. Ce bandeau porte les
+              deux, et fait du retour un geste evident plutot qu'un onglet a retrouver. */}
+          {axe === 'rail' && railOuvert && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap', marginBottom: 'var(--sp-3)' }}>
+              <button
+                onClick={() => changerAxe('parcours')}
+                title="Revenir au choix de l’étape"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '4px 10px 4px 6px', borderRadius: 'var(--r-md)', cursor: 'pointer',
+                  fontSize: 'var(--fs-sm)', fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+                  background: 'white', color: 'var(--blue)',
+                  border: '1px solid var(--border)',
+                }}>
+                <ChevronLeft size={15} /> Parcours
+              </button>
+              <span style={{ color: 'var(--muted-light)', fontSize: 'var(--fs-md)' }}>/</span>
+              <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 800 }}>{railOuvert.libelle}</span>
+              <span style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>{railOuvert.titre}</span>
+              <Chip
+                texte={railOuvert.etat === 'actif' ? 'en service' : railOuvert.etat === 'manuel' ? 'manuelle' : 'à brancher'}
+                ton={railOuvert.etat === 'actif' ? 'ok' : railOuvert.etat === 'manuel' ? 'attente' : 'neutre'}
+              />
+            </div>
+          )}
+
           {/* ── Aujourd'hui : une seule ligne pour piloter la campagne en cours ── */}
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', background: 'white', border: '1px solid var(--border)', borderRadius: 12, padding: '11px 16px', marginBottom: 12, boxShadow: 'var(--shadow-sm)' }}>
-            {/* ── Axe de lecture ──────────────────────────────────────────────────
-                ⚠️ Un SÉLECTEUR, pas un filtre de plus. « Appels du jour » répond à
-                « qu'ai-je fait aujourd'hui », « Par échéance » à « où en est ce dossier ».
-                Les mélanger rendait les compteurs ambigus. */}
-            <div style={{ display: 'flex', gap: 3, paddingRight: 14, marginRight: 14, borderRight: '1px solid #eef2f6' }}>
-              {([
-                { id: 'jour' as const,     libelle: 'Appels du jour', titre: "Ce qui a été fait un jour donné — la console d'appel" },
-                { id: 'echeance' as const, libelle: 'Par échéance',   titre: 'Où en est chaque dossier, toutes dates d’appel confondues' },
-              ]).map(o => {
-                const actif = axe === o.id;
-                return (
-                  <button key={o.id} onClick={() => changerAxe(o.id)} title={o.titre}
-                    style={{
-                      padding: '4px 10px', borderRadius: 7, cursor: 'pointer',
-                      fontSize: 'var(--fs-xs)', fontWeight: 700, fontFamily: 'Lexend,sans-serif',
-                      background: actif ? 'var(--text)' : 'white',
-                      color: actif ? 'white' : 'var(--muted)',
-                      border: `1px solid ${actif ? 'var(--text)' : 'var(--border)'}`,
-                    }}>
-                    {o.libelle}
-                  </button>
-                );
-              })}
+            <div style={{ paddingRight: 14, marginRight: 14, borderRight: '1px solid #eef2f6' }}>
+              {barreAxes()}
             </div>
+
+            {/* ── Portée, dans un rail uniquement ─────────────────────────────────
+                Le défaut est le jour exact de l'étape. Les deux élargissements existent
+                parce qu'une étape est un jour précis : sans eux, les dossiers en transit
+                entre deux étapes seraient inatteignables depuis le parcours. */}
+            {axe === 'rail' && railOuvert && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingRight: 14, marginRight: 14, borderRight: '1px solid #eef2f6' }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '.5px', fontFamily: 'Lexend,sans-serif' }}>
+                  Portée
+                </span>
+                {([
+                  { id: 'jour' as const,    libelle: railOuvert.libelle, titre: `La cohorte du jour même de l’étape (${railOuvert.libelle} exactement) — le travail programmé` },
+                  { id: 'segment' as const, libelle: etapeSuivante(railOuvert) ? `→ J+${etapeSuivante(railOuvert)!.jour - 1}` : '→ fin', titre: 'De cette étape jusqu’à la veille de la suivante : les dossiers en transit, sans rendez-vous aujourd’hui' },
+                  { id: 'toutes' as const,  libelle: 'Toutes', titre: 'Toutes les échéances passées, sans borne — pour chercher un dossier précis' },
+                ]).map(o => {
+                  const on = porteeRail === o.id;
+                  return (
+                    <button key={o.id} onClick={() => setPorteeRail(o.id)} title={o.titre}
+                      style={{
+                        padding: '3px 9px', borderRadius: 7, cursor: 'pointer',
+                        fontSize: 'var(--fs-xs)', fontWeight: 700, fontFamily: 'Lexend,sans-serif',
+                        background: on ? 'var(--blue)' : 'white',
+                        color: on ? 'white' : 'var(--muted)',
+                        border: `1px solid ${on ? 'var(--blue)' : 'var(--border)'}`,
+                      }}>
+                      {o.libelle}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {/* Le choix de journée n'a de sens que sur l'axe « appels du jour » : l'afficher
                 sur l'axe échéance laisserait croire qu'il filtre quelque chose. */}

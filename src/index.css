@@ -47,6 +47,18 @@
   --st-echec-fg:   #b91c1c;  --st-echec-bg:   #fef2f2;  --st-echec-bd:   #fecaca;
   --st-neutre-fg:  #55738c;  --st-neutre-bg:  #f9fafb;  --st-neutre-bd:  #e5e7eb;
 
+  /* ── Canaux du parcours de relances ─────────────────────────────────────────
+   * ⚠️ Un CANAL n'est pas un ÉTAT. Réutiliser --st-ok pour « SMS » brouillerait les deux
+   * langages visuels : le vert cesserait de dire « abouti » pour dire aussi « écrit ».
+   * D'où cette famille distincte, dans le même esprit que PalierChip qui reste séparé
+   * de Chip. Trois familles suffisent — voix, écrit, papier :
+   *   voix   → l'appel, le seul canal où quelqu'un répond
+   *   ecrit  → SMS et mail, partis sans interlocuteur
+   *   papier → courrier, LRE, bascules d'outil : le monde hors ligne */
+  --cn-voix-fg:   #1d4ed8;  --cn-voix-bg:   #eff6ff;  --cn-voix-bd:   #bfdbfe;
+  --cn-ecrit-fg:  #0f766e;  --cn-ecrit-bg:  #f0fdfa;  --cn-ecrit-bd:  #99f6e4;
+  --cn-papier-fg: #b45309;  --cn-papier-bg: #fffbeb;  --cn-papier-bd: #fde68a;
+
   /* ── Échelles ───────────────────────────────────────────────────────────────
    * Fermées volontairement. Les vues utilisaient 11 / 11,5 / 12 / 12,5 / 13 / 13,5 px :
    * des demi-pixels qui ne se justifiaient par rien et qu'on ne peut pas retenir. */
@@ -357,4 +369,28 @@ tr:hover .phone-timeline-btn,
   width: 6px; height: 6px; border-radius: 50%; background: var(--blue-mid);
   animation: livePulse 2s ease-in-out infinite;
   display: inline-block; margin-left: 4px;
+}
+
+/* ── Parcours de relances : les neuf rails ────────────────────
+ * ⚠️ Paliers EXPLICITES, et non `auto-fit`. Mesuré le 2026-09-04 :
+ * `repeat(auto-fit, minmax(148px, 1fr))` calcule 8 colonnes pour 1392 px de contenu, ce
+ * qui laisse la neuvième tuile ORPHELINE sur une seconde ligne. `auto-fit` ne peut pas
+ * garantir un nombre de colonnes : il faut les nommer. Les trois paliers donnent 9 / 5 / 3,
+ * trois découpages où aucune ligne ne reste seule avec une tuile. */
+.parcours-tuiles {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (min-width: 760px)  { .parcours-tuiles { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+@media (min-width: 1180px) { .parcours-tuiles { grid-template-columns: repeat(9, minmax(0, 1fr)); } }
+
+/* Le détail : deux colonnes seulement quand il y a la place pour les deux. */
+.parcours-detail {
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 900px) {
+  .parcours-detail { grid-template-columns: minmax(0, 2fr) minmax(250px, 1fr); }
 }
