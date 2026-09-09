@@ -147,16 +147,20 @@ export const RAILS: Rail[] = [
     ],
   },
   {
-    code: 'R4', libelle: 'J+7', titre: 'Second appel, une semaine après l\u2019échéance',
-    source: 'relances', jour: 7, canaux: ['appel', 'sms', 'mail'], actif: false, etat: 'prevu',
+    // ⚠️ En service depuis le 2026-09-09. Agent EL dédié `agent_3701m22p76xyeh4a8bahtbp6kq8v`,
+    // son PROPRE post-call (`el-post-call-j7`) et son propre cron. Le message diffère du R3 et
+    // il est porté par le PREMIER MESSAGE ElevenLabs, qui est un réglage PAR AGENT : c'est pour
+    // ça qu'il fallait un second agent, et non une variable dynamique.
+    code: 'R4', libelle: 'J+7', titre: 'Second appel, une semaine après la fin de location',
+    source: 'relances', jour: 7, canaux: ['appel', 'sms'], actif: true, etat: 'actif',
     resume: 'Deuxième tentative vocale pour les dossiers restés sans contact abouti DANS CE RAIL. '
-      + 'Demande un agent IA dédié : le message diffère, et il est porté par le premier message '
-      + 'ElevenLabs, qui est un réglage par agent.',
-    porteur: 'Agent IA à créer \u2014 message \u00ab échue depuis une semaine \u00bb',
+      + 'Pas de mail — retiré du parcours à cette étape par le client : la patiente en a déjà '
+      + 'reçu un après son appel du R3.',
+    porteur: 'Amélie Sortant J+7 — agent IA dédié',
     actions: [
-      { canal: 'appel', libelle: 'Appel (2) par un agent dédié', detail: 'Créneau distinct de R3, sinon les deux rails se disputent les 10 appels', etat: 'a-creer' },
-      { canal: 'sms',   libelle: 'SMS (2) après l\u2019appel',   detail: 'Même chaîne W3 que R3',                                                    etat: 'a-creer' },
-      { canal: 'mail',  libelle: 'Email (4) via Brevo',           detail: 'Même chaîne W3 que R3',                                                    etat: 'a-creer' },
+      { canal: 'appel', libelle: 'Appel (2) par l’agent IA dédié', detail: 'Cron 15h30 → 16h55, dix appels par passage — créneau distinct de R3', etat: 'actif' },
+      { canal: 'sms',   libelle: 'SMS (2) après l’appel', detail: 'Envoyé par le post-call J+7 selon l’issue — jamais aux fixes', etat: 'actif' },
+      { canal: 'mail',  libelle: 'Email (4) via Brevo', detail: 'Retiré du parcours — décision client du 2026-09-09', etat: 'retire' },
     ],
   },
   {
@@ -227,8 +231,11 @@ export function railParCode(code: string): Rail | undefined {
  * jour : mesuré le 2026-09-09, le rail J+1 comptait **86** dossiers avec le bon écart contre
  * **10** sans.
  *
- * ⚠️ Doit rester d'accord avec la liste `etapes(jour)` de `PG Dates A Juger` (0, 6, 13, 20,
- * 29, 32, 39) et avec `date_echeance = CURRENT_DATE` de `PG Cibles Appels`.
+ * ⚠️ Doit rester d'accord avec TROIS endroits côté n8n — les modifier ensemble :
+ *   • `PG Dates A Juger` du cron J+1, liste `etapes(jour)` : 0, 6, 13, 20, 29, 32, 39 ;
+ *   • `PG Cibles Appels` du cron J+1  : `date_echeance = CURRENT_DATE`     (écart 0) ;
+ *   • `PG Cibles J7`      du cron J+7 : `date_echeance = CURRENT_DATE - 6` (écart 6).
+ * Vérifié le 2026-09-09 : l'écran et les deux crons comptent pareil — 86 / 28 / 31.
  */
 export function ecartEcheance(rail: Rail): number {
   return rail.jour - 1;
