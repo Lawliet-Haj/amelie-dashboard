@@ -6,12 +6,13 @@ import {
 import type { AuthUser, Facturation, FacturationData, FacturationLot, Palier } from '../types';
 import {
   Chip, StatsBar, type VuePuce, GroupedList, type GroupeEntete,
-  DataTable, thStyle, tdStyle, tdDiscret, SearchInput, Portal,
+  DataTable, thStyle, tdStyle, tdDiscret, SearchInput, BoutonPause, Portal,
 } from '../ui';
 import {
   aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, isFixe,
 } from '../lib/format';
 import { analyserSms } from '../lib/sms';
+import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 
 const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
 
@@ -759,6 +760,51 @@ export function FacturationView({ user }: { user: AuthUser }) {
   const [modal, setModal]         = useState<Palier | null>(null);
   const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal } | null>(null);
   const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
+  /**
+   * INTERRUPTEUR DE PAUSE du module. Coupe les envois AUTOMATIQUES (SMS et mail des crons)
+   * sans jamais toucher a l'extraction ORTHOP — voir `src/lib/reglages.ts`.
+   *
+   * ⚠️ Chaque jour vise une date de fin de location DIFFERENTE : couper l'extraction ne
+   * previendrait jamais les patientes de ce jour-la, et aucun rattrapage n'existe. La pause
+   * suspend l'action, pas la collecte.
+   *
+   * ⚠️ `null` signifie « on ne sait pas », pas « en service ». Le composant dessine alors un
+   * bouton desactive plutot que d'affirmer que le module tourne.
+   */
+  const [reglages, setReglages]             = useState<Reglage[] | null>(null);
+  const [pauseEnCours, setPauseEnCours]     = useState(false);
+  const [pauseErreur, setPauseErreur]       = useState('');
+
+  const chargerReglages = useCallback(async () => {
+    const r = await lireReglages(user.token);
+    if (r.ok) { setReglages(r.reglages); setPauseErreur(''); }
+    else { setReglages(null); setPauseErreur(r.erreur || 'lecture impossible'); }
+  }, [user.token]);
+
+  useEffect(() => { chargerReglages(); }, [chargerReglages]);
+
+  const basculerPause = async (enPause: boolean, motif: string) => {
+    setPauseEnCours(true);
+    const r = await basculerReglage(user.token, 'facturation', enPause, motif);
+    setPauseEnCours(false);
+    if (!r.ok) {
+      setPauseErreur(r.erreur || 'bascule impossible');
+      // On resynchronise : l'ecran ne doit pas rester sur un etat qu'il a suppose.
+      chargerReglages();
+      return;
+    }
+    // ⚠️ On adopte l'etat RENVOYE PAR LE SERVEUR, pas celui qu'on croyait poser. Un refus
+    // cote serveur (cloisonnement par role) ne doit jamais laisser l'ecran afficher une
+    // pause qui n'existe pas en base.
+    const maj = r.reglages[0];
+    if (maj) {
+      setReglages(prev => [...(prev || []).filter(x => x.cle !== maj.cle), maj]);
+      setPauseErreur('');
+    }
+  };
+
+  const reglagePause = (reglages || []).find(x => x.cle === 'facturation');
+
   const [recherche, setRecherche] = useState('');
   // Filtre issu des statistiques d'envoi ('tout' = aucun).
   const [vue, setVue]             = useState('tout');
@@ -956,6 +1002,17 @@ export function FacturationView({ user }: { user: AuthUser }) {
           <button onClick={() => setSucces('')} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: '#86efac', display: 'flex' }}><X size={12} /></button>
         </div>
       )}
+
+      {/* ── Interrupteur de pause ───────────────────────────────────────── */}
+      <div style={{ marginBottom: 'var(--sp-3)' }}>
+        <BoutonPause
+          reglage={reglagePause}
+          libelleModule="la facturation"
+          enCours={pauseEnCours}
+          erreur={pauseErreur}
+          onBasculer={basculerPause}
+        />
+      </div>
 
       {/* ── Date de référence ────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'white', border: '1px solid var(--border)', borderRadius: 12, marginBottom: 14, flexWrap: 'wrap' }}>

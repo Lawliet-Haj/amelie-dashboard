@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
 import { railParCode, lignesDuRail, etapeSuivante, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
+import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
 
 /** Les quatre axes de lecture du module. Voir l'etat `axe` plus bas. */
@@ -13,7 +14,7 @@ import {
   UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle, CloudDownload, Send,
 } from 'lucide-react';
 import type { AuthUser, Relance, RelancesStats, BatchGroup } from '../types';
-import { GroupedList, type GroupeEntete, type Ton, Chip, Portal } from '../ui';
+import { GroupedList, type GroupeEntete, type Ton, Chip, BoutonPause, Portal } from '../ui';
 import {
   aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
 } from '../lib/format';
@@ -1270,6 +1271,48 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
    */
   const [porteeRail, setPorteeRail]         = useState<PorteeRail>('jour');
   /**
+   * INTERRUPTEUR DE PAUSE du module. Coupe les envois AUTOMATIQUES (appels, SMS, mail des
+   * crons) sans jamais toucher a l'extraction — voir `src/lib/reglages.ts`.
+   *
+   * ⚠️ `null` signifie « on ne sait pas », pas « en service ». Le composant dessine alors un
+   * bouton desactive : afficher « Mettre en pause » alors qu'on ignore l'etat laisserait
+   * croire que le module tourne.
+   */
+  const [reglages, setReglages]             = useState<Reglage[] | null>(null);
+  const [pauseEnCours, setPauseEnCours]     = useState(false);
+  const [pauseErreur, setPauseErreur]       = useState('');
+
+  const chargerReglages = useCallback(async () => {
+    const r = await lireReglages(user.token);
+    if (r.ok) { setReglages(r.reglages); setPauseErreur(''); }
+    else { setReglages(null); setPauseErreur(r.erreur || 'lecture impossible'); }
+  }, [user.token]);
+
+  useEffect(() => { chargerReglages(); }, [chargerReglages]);
+
+  const basculerPause = async (enPause: boolean, motif: string) => {
+    setPauseEnCours(true);
+    const r = await basculerReglage(user.token, 'recouvrement', enPause, motif);
+    setPauseEnCours(false);
+    if (!r.ok) {
+      setPauseErreur(r.erreur || 'bascule impossible');
+      // On resynchronise : l'ecran ne doit pas rester sur un etat qu'il a suppose.
+      chargerReglages();
+      return;
+    }
+    // ⚠️ On adopte l'etat RENVOYE PAR LE SERVEUR, pas celui qu'on croyait poser. Un refus
+    // cote serveur (cloisonnement par role) ne doit jamais laisser l'ecran afficher une
+    // pause qui n'existe pas en base.
+    const maj = r.reglages[0];
+    if (maj) {
+      setReglages(prev => [...(prev || []).filter(x => x.cle !== maj.cle), maj]);
+      setPauseErreur('');
+    }
+  };
+
+  const reglagePause = (reglages || []).find(x => x.cle === 'recouvrement');
+
+  /**
    * SONDE ORTHOP par etape — ce qu'ORTHOP detient pour la date de chaque rail, SANS RIEN
    * IMPORTER (`dry_run`).
    *
@@ -1874,6 +1917,17 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         </div>
       </div>
 
+
+      {/* ── Interrupteur de pause ───────────────────────────────────────────── */}
+      <div style={{ marginBottom: 'var(--sp-3)' }}>
+        <BoutonPause
+          reglage={reglagePause}
+          libelleModule="le recouvrement"
+          enCours={pauseEnCours}
+          erreur={pauseErreur}
+          onBasculer={basculerPause}
+        />
+      </div>
       {/* ── Tabs ────────────────────────────────────────────────────────────── */}
       <div style={{ marginBottom: 22 }}>
         <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 12, padding: 4, gap: 2 }}>

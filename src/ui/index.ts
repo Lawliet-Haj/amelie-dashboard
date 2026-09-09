@@ -14,4 +14,5 @@ export { GroupedList, type GroupeEntete } from './GroupedList';
 export { DataTable, thStyle, tdStyle, tdDiscret } from './DataTable';
 export { SearchInput } from './SearchInput';
 export { CanalPuce } from './CanalPuce';
+export { BoutonPause } from './BoutonPause';
 export { Portal } from '../lib/Portal';
