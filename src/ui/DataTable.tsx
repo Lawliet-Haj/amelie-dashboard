@@ -40,7 +40,7 @@ export const tdDiscret: CSSProperties = {
 };
 
 export function DataTable({
-  colonnes, children, vide, encadre = true,
+  colonnes, children, vide, encadre = true, hauteurMax,
 }: {
   colonnes: string[];
   children: ReactNode;
@@ -48,12 +48,28 @@ export function DataTable({
   vide?: ReactNode;
   /** `false` quand le tableau est déjà dans un cadre (à l'intérieur d'un groupe). */
   encadre?: boolean;
+  /**
+   * Borne la hauteur du tableau, qui défile alors sur lui-même (ex. `'38vh'`).
+   *
+   * À utiliser quand le tableau vit dans un conteneur déjà borné — un modal, typiquement :
+   * sans ça, 94 lignes repoussent tout ce qui suit hors d'atteinte, et il faut traverser la
+   * liste entière pour retrouver les actions du bas.
+   *
+   * ⚠️ L'en-tête devient collant UNIQUEMENT dans ce mode. Le rendre collant partout
+   * changerait le comportement des tableaux déjà en place, qui défilent avec la page.
+   */
+  hauteurMax?: string;
 }) {
+  const th = hauteurMax
+    ? { ...thStyle, position: 'sticky' as const, top: 0, zIndex: 1 }
+    : thStyle;
   const table = (
-    <div style={{ overflowX: 'auto' }}>
+    <div style={hauteurMax
+      ? { overflow: 'auto', maxHeight: hauteurMax }
+      : { overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr>{colonnes.map(c => <th key={c} style={thStyle}>{c}</th>)}</tr>
+          <tr>{colonnes.map(c => <th key={c} style={th}>{c}</th>)}</tr>
         </thead>
         <tbody>
           {vide

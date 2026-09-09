@@ -99,20 +99,28 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
 
   return (
     <Portal>
+      {/* ⚠️ LE MODAL EST BORNÉ À L'ÉCRAN, et c'est son CORPS qui défile — pas la page.
+          Sans ça, 94 lignes de sélection étirent le modal bien au-delà du viewport :
+          l'en-tête part vers le haut, et il faut traverser toute la liste pour atteindre
+          l'appel de test. Trois pièces indissociables : `overflow: hidden` sur le fond,
+          `maxHeight: 100%` sur le cadre, et `minHeight: 0` sur le corps — sans ce dernier,
+          un enfant flex refuse de rétrécir, donc de défiler. */}
       <div
         onClick={onFermer}
         style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1000,
-                 display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-                 padding: 'var(--sp-5) var(--sp-4)', overflowY: 'auto' }}
+                 display: 'flex', alignItems: 'center', justifyContent: 'center',
+                 padding: 'var(--sp-4)', overflow: 'hidden' }}
       >
         <div
           onClick={e => e.stopPropagation()}
           style={{ background: 'var(--bg)', borderRadius: 'var(--r-lg)', width: '100%',
-                   maxWidth: 960, padding: 'var(--sp-5)', display: 'flex',
-                   flexDirection: 'column', gap: 'var(--sp-4)' }}
+                   maxWidth: 960, maxHeight: '100%', display: 'flex',
+                   flexDirection: 'column', overflow: 'hidden' }}
         >
           {/* ── En-tête ───────────────────────────────────────────────────── */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-3)' }}>
+          <div style={{ flexShrink: 0, padding: 'var(--sp-4) var(--sp-5)',
+                        borderBottom: '1px solid var(--border)',
+                        display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-3)' }}>
             <div style={{ flexGrow: 1 }}>
               <h3 style={{ fontSize: 'var(--fs-xl)', fontWeight: 800 }}>
                 Tester l’étape {rail.libelle}
@@ -127,6 +135,11 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
               <X size={20} />
             </button>
           </div>
+
+          {/* Le seul element qui defile. */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto',
+                        padding: 'var(--sp-4) var(--sp-5) var(--sp-5)',
+                        display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
 
           {desaccord && (
             <Bandeau ton="echec" titre="Désaccord sur la date visée">
@@ -183,6 +196,7 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                 </div>
 
                 <DataTable
+                  hauteurMax="38vh"
                   colonnes={['Verdict', 'Dossier', 'Téléphone', 'Statut', 'Tent.', 'SMS', 'Mail', 'Dernier appel']}
                   vide={sel.lignes.length === 0 ? 'Aucun dossier sur cette étape aujourd’hui.' : undefined}
                 >
@@ -346,6 +360,7 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
               )}
             </section>
           )}
+          </div>
         </div>
       </div>
     </Portal>
