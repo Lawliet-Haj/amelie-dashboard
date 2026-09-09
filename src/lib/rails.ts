@@ -17,10 +17,23 @@
  * `orthop_prescription` seul, donc un palier J-30 y bloquerait le J-15 de la même patiente
  * ET l'extraction du jour J, en silence (`ON CONFLICT DO NOTHING`).
  *
- * ⚠️ LE PREMIER APPEL A LIEU À J+0, le jour même de l'échéance — le cron extrait la liste
- * du jour et appelle à 12h30. **Pas à J+1**, malgré le libellé historique du parcours. Une
- * borne posée à J+1 déclare « non jointe » toute la cohorte servie le jour même : mesuré le
- * 2026-09-04, cela donnait 341 faux dossiers à appeler au lieu de 105.
+ * ⚠️⚠️ TOUTE L'ÉCHELLE EST ANCRÉE SUR LA **FIN DE LOCATION**, pas sur `date_echeance`.
+ * C'est déjà le cas de J-30 et J-15 côté facturation, et c'est ce qui rend le parcours
+ * cohérent d'un bout à l'autre.
+ *
+ * `relances.date_echeance` est la date **« applicable du »**, soit **fin de location + 1**
+ * (l'écran ORTHOP « Fin loc. » donne J+1 — vérifié sur les exports, 99/99 le 27/08).
+ * Appeler le jour de `date_echeance`, c'est donc appeler **à J+1** après la fin de location.
+ *
+ * Un rail libellé J+N tire donc sur `date_echeance + (N − 1)` : voir `ecartEcheance()`.
+ *   J+1  → écart 0  (la cohorte du jour)
+ *   J+7  → écart 6
+ *   J+14 → écart 13
+ *
+ * ⚠️ Corrigé le 2026-09-09 : le premier rail était libellé « J+0 » parce que l'écart était
+ * compté depuis `date_echeance` au lieu de la fin de location. Le décalage n'est pas
+ * cosmétique — mesuré le jour même, le rail J+1 compte **86** dossiers avec le bon écart
+ * contre **10** sans.
  */
 import { aujourdhuiIso, decalerJours, ecartJours, jourLocal } from './format';
 import type { Relance } from '../types';
@@ -55,17 +68,22 @@ export interface Rail {
   /** `facturation` uniquement — le rail est porté par la colonne `palier`. */
   palier?: 'J30' | 'J15';
   /**
-   * L'écart en jours qui DÉFINIT l'étape : J+0 → 0, J+7 → 7, J-30 → -30.
+   * L'écart en jours depuis la **FIN DE LOCATION** — c'est le libellé du parcours :
+   * J+1 → 1, J+7 → 7, J-30 → −30.
+   *
+   * ⚠️⚠️ CE N'EST PAS L'ÉCART SUR `date_echeance`. Cette dernière vaut fin de location + 1,
+   * donc l'écart à comparer est `jour − 1` : utiliser `ecartEcheance()`, jamais `jour` nu,
+   * dans un calcul de dates.
    *
    * ⚠️ UN JOUR PRÉCIS, PAS UNE FENÊTRE. Le parcours est une suite de rendez-vous, pas un
-   * découpage du temps : un dossier à J+3 n'a rien de programmé, il attend son J+7. Le
-   * premier modèle pavait le temps en fenêtres (J+0 à J+6, J+7 à J+13…) et affichait donc
-   * 517 dossiers sur l'étape J+0, là où la cohorte du jour en compte 102.
+   * découpage du temps : un dossier à J+4 n'a rien de programmé, il attend son J+7. Le
+   * premier modèle pavait le temps en fenêtres et affichait donc 517 dossiers sur la
+   * première étape, là où la cohorte du jour en compte 86.
    *
-   * ⚠️ Conséquence à ne jamais masquer : mesuré le 2026-09-04, **761 dossiers actifs sur
-   * 940 sont ENTRE deux étapes** — 81 %. La somme des neuf étapes ne fait donc pas le
-   * total de la base, et c'est normal. Un écran qui n'afficherait que les étapes aurait
-   * l'air d'avoir perdu 761 dossiers : voir `comptesGlobaux`.
+   * ⚠️ Conséquence à ne jamais masquer : la plupart des dossiers actifs sont ENTRE deux
+   * étapes. La somme des neuf étapes ne fait donc pas le total de la base, et c'est normal.
+   * Un écran qui n'afficherait que les étapes aurait l'air d'avoir perdu le reste : voir
+   * `comptesGlobaux`.
    */
   jour: number;
   canaux: CanalRail[];
@@ -114,15 +132,16 @@ export const RAILS: Rail[] = [
     ],
   },
   {
-    // ⚠️ J+0, et non J+1 : le cron extrait la liste du jour et appelle à 12h30 le jour
-    // même de l'échéance. Le libellé « J+1 » du parcours d'origine était faux.
-    code: 'R3', libelle: 'J+0', titre: 'Premier appel, le jour de l\u2019échéance',
-    source: 'relances', jour: 0, canaux: ['appel', 'sms', 'mail'], actif: true, etat: 'actif',
-    resume: 'L\u2019ordonnance arrive à échéance. L\u2019agent IA appelle, puis W3 envoie le SMS '
+    // ⚠️ J+1, compté depuis la FIN DE LOCATION. `date_echeance` valant fin de location + 1,
+    // ce rail tire donc sur `date_echeance` elle-même : écart 0. Le libellé « J+0 » utilisé
+    // jusqu'au 2026-09-09 comptait à tort depuis `date_echeance`.
+    code: 'R3', libelle: 'J+1', titre: 'Premier appel, le lendemain de la fin de location',
+    source: 'relances', jour: 1, canaux: ['appel', 'sms', 'mail'], actif: true, etat: 'actif',
+    resume: 'La location est arrivée à son terme la veille. L\u2019agent IA appelle, puis W3 envoie le SMS '
       + 'et le mail selon l\u2019issue de l\u2019appel.',
     porteur: 'Amélie Sortant \u2014 Recouvrement',
     actions: [
-      { canal: 'appel', libelle: 'Appel (1) par l\u2019agent IA', detail: 'Cron 12h30 \u2192 13h55, dix appels par passage',           etat: 'actif' },
+      { canal: 'appel', libelle: 'Appel (1) par l\u2019agent IA', detail: 'Cron 12h30 \u2192 13h55, dix appels par passage \u2014 la cohorte DU JOUR uniquement',           etat: 'actif' },
       { canal: 'sms',   libelle: 'SMS (1) après l\u2019appel',    detail: 'Envoyé par W3 selon l\u2019issue \u2014 jamais aux fixes', etat: 'actif' },
       { canal: 'mail',  libelle: 'Email (3) via Brevo',            detail: 'Modèle 353 \u2014 part après CHAQUE appel, fixes inclus',   etat: 'actif' },
     ],
@@ -200,6 +219,22 @@ export function railParCode(code: string): Rail | undefined {
 }
 
 /**
+ * L'écart à comparer à `CURRENT_DATE - date_echeance` pour ce rail.
+ *
+ * ⚠️⚠️ TOUJOURS passer par cette fonction dans un calcul de dates, jamais par `rail.jour`
+ * nu. `date_echeance` est la date « applicable du », soit **fin de location + 1**, alors que
+ * `jour` est compté depuis la fin de location. Les confondre décale toute l'échelle d'un
+ * jour : mesuré le 2026-09-09, le rail J+1 comptait **86** dossiers avec le bon écart contre
+ * **10** sans.
+ *
+ * ⚠️ Doit rester d'accord avec la liste `etapes(jour)` de `PG Dates A Juger` (0, 6, 13, 20,
+ * 29, 32, 39) et avec `date_echeance = CURRENT_DATE` de `PG Cibles Appels`.
+ */
+export function ecartEcheance(rail: Rail): number {
+  return rail.jour - 1;
+}
+
+/**
  * Sur quelle étape du parcours cette relance tombe-t-elle AUJOURD'HUI ?
  *
  * `null` dans trois cas, tous légitimes :
@@ -212,7 +247,7 @@ export function railDeRelance(r: Relance, auj: string = aujourdhuiIso()): Rail |
   if (!r.date_echeance) return null;
   const j = ecartJours(r.date_echeance, auj);
   if (!Number.isFinite(j) || j < 0) return null;
-  return RAILS_RELANCES.find(x => x.jour === j) ?? null;
+  return RAILS_RELANCES.find(x => ecartEcheance(x) === j) ?? null;
 }
 
 /** L'étape suivante du parcours, ou `null` si c'est la dernière. */
@@ -242,9 +277,10 @@ export function lignesDuRail(
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) return false;
     if (portee === 'toutes') return true;
-    if (portee === 'jour') return j === rail.jour;
+    if (portee === 'jour') return j === ecartEcheance(rail);
     // 'segment' : de cette étape jusqu'à la veille de la suivante.
-    return j >= rail.jour && (suivante == null || j < suivante.jour);
+    return j >= ecartEcheance(rail)
+      && (suivante == null || j < ecartEcheance(suivante));
   });
 }
 
@@ -298,7 +334,7 @@ export function jointParEcritDansLeRail(
 ): boolean {
   if (!r.date_echeance || rail.source !== 'relances') return false;
   // Le jour d'entrée dans le rail, en jour parisien.
-  const entree = decalerJours(r.date_echeance, rail.jour);
+  const entree = decalerJours(r.date_echeance, ecartEcheance(rail));
   if (!entree) return false;
 
   const smsOk = r.sms_statut === 'livre'
@@ -326,7 +362,7 @@ export function jointVoixDansLeRail(
   _auj: string = aujourdhuiIso(),
 ): boolean {
   if (!r.date_echeance || rail.source !== 'relances') return false;
-  const entree = decalerJours(r.date_echeance, rail.jour);
+  const entree = decalerJours(r.date_echeance, ecartEcheance(rail));
   if (!entree || !r.dernier_appel || jourLocal(r.dernier_appel) < entree) return false;
 
   const aParle = r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert';
@@ -343,15 +379,13 @@ export function quotaEpuise(r: Relance): boolean {
 
 /**
  * ── CES COMPTEURS ONT ÉTÉ CONFRONTÉS À LA BASE ────────────────────────────────
- * Mesuré le 2026-09-04, une étape = UN JOUR précis :
+ * Mesuré le 2026-09-09, une étape = UN JOUR précis, écart compté sur `date_echeance` :
  *
- *   étape | sur l'étape | jamais appelées | quota épuisé
- *   J+0   |         102 |             102 |            0
- *   J+7   |          77 |               0 |            0
- *   J+14 à J+40 : 0 — la campagne a démarré le 22/08, rien n'a encore vieilli jusque-là.
- *
- * Et le total qui explique tout le reste :
- *   940 dossiers actifs · 179 sur une étape · **761 entre deux étapes** (81 %)
+ *   étape | écart | date visée | sur l'étape | jamais jointes à la voix
+ *   J+1   |     0 | 09/09      |          86 |                       86
+ *   J+7   |     6 | 03/09      |          28 |                        3
+ *   J+14  |    13 | 27/08      |          31 |                        0
+ *   J+21 à J+40 : 0 — la campagne a démarré le 22/08, rien n'a encore vieilli jusque-là.
  *
  * ⚠️ POURQUOI CE CONTRÔLE COMPTE : l'écran et les crons doivent compter pareil. Un écran
  * qui annonce « 417 à appeler » quand le cron n'en sélectionne que 5 est pire qu'un écran

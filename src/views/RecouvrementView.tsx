@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
-import { railParCode, lignesDuRail, etapeSuivante, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
+import { railParCode, lignesDuRail, etapeSuivante, ecartEcheance, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
 
@@ -1333,7 +1333,10 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     // ⚠️ `aujourdhuiIso()` et non `jourCourant` : cette variable est declaree PLUS BAS,
     // et la citer dans le tableau de dependances la lirait dans sa zone morte (TDZ).
     const auj = aujourdhuiIso();
-    const cibles = RAILS_RELANCES.map(r => ({ code: r.code, date: decalerJours(auj, -r.jour) }));
+    // ⚠️ `ecartEcheance(r)` et NON `r.jour` : `jour` est l'ecart depuis la FIN DE LOCATION
+    // (le libelle du parcours), alors que la date a interroger est une `date_echeance`, qui
+    // vaut fin de location + 1. Utiliser `jour` nu decalerait chaque sonde d'un jour.
+    const cibles = RAILS_RELANCES.map(r => ({ code: r.code, date: decalerJours(auj, -ecartEcheance(r)) }));
     setSondes(Object.fromEntries(cibles.map(c => [c.code, { etat: 'chargement' as const }])));
     // Concurrence 2 : ORTHOP est une API SOAP, on ne la matraque pas.
     let i = 0;

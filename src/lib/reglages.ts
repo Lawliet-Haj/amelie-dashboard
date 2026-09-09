@@ -21,9 +21,28 @@ const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
 /** Les modules qui portent un interrupteur. Doit rester aligné sur la table `reglages`. */
 export type CleReglage = 'recouvrement' | 'facturation';
 
+/**
+ * `bool` → c'est `en_pause` qui fait foi. `nombre` / `texte` → c'est `valeur`.
+ * ⚠️ Sans ce champ, un lecteur ne saurait pas laquelle des deux colonnes lire.
+ */
+export type TypeReglage = 'bool' | 'nombre' | 'texte';
+
 export interface Reglage {
   cle: CleReglage | string;
+  type: TypeReglage;
+  /** N'a de sens que pour `type: 'bool'`. */
   en_pause: boolean;
+  /** N'a de sens que pour `nombre` et `texte`. Toujours transporté en TEXTE. */
+  valeur: string;
+  libelle: string;
+  aide: string;
+  /** `null` = pas de borne. ⚠️ Ne pas remplacer par 0 : ce serait une borne réelle. */
+  mini: number | null;
+  maxi: number | null;
+  unite: string;
+  /** Périmètre : `recouvrement`, `facturation`, ou vide = réservé à l'admin. */
+  module: string;
+  rang: number;
   motif: string;
   modifie_par: string;
   /** Horodatage en TEXTE, tel que renvoyé par Postgres (UTC naïf) — passer par `parseUtc`. */
@@ -80,4 +99,29 @@ export function lireReglages(token: string) {
  */
 export function basculerReglage(token: string, cle: CleReglage, enPause: boolean, motif = '') {
   return appeler(token, { action: 'basculer', cle, en_pause: enPause, motif });
+}
+
+/**
+ * Règle la valeur d'un paramètre.
+ *
+ * ⚠️⚠️ UN REFUS SE LIT SUR `reglages`, PAS SUR `ok`. Les gardes vivent en SQL (périmètre du
+ * rôle, type, bornes) : quand l'un d'eux bloque, la requête ne met à jour aucune ligne et
+ * renvoie donc un tableau VIDE avec `ok: true`. Traiter `ok` seul comme un succès afficherait
+ * une valeur qui n'est jamais entrée en base.
+ */
+export async function reglerReglage(
+  token: string, cle: string, valeur: string,
+): Promise<ReponseReglages> {
+  const r = await appeler(token, { action: 'regler', cle, valeur });
+  if (r.ok && r.reglages.length === 0) {
+    return { ok: false, reglages: [], erreur: 'refusé : valeur hors bornes, mauvais format, ou paramètre hors de votre périmètre' };
+  }
+  return r;
+}
+
+/** Le périmètre d'un paramètre : ce rôle peut-il le modifier ? */
+export function peutRegler(reglage: Reglage, role: string): boolean {
+  if (role === 'admin') return true;
+  // ⚠️ Un `module` vide est réservé à l'admin — refus par défaut, jamais élargissement.
+  return reglage.module !== '' && reglage.module === role;
 }

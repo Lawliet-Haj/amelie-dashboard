@@ -8,11 +8,12 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import {
   Phone, AlertTriangle, Clock, Bell, RefreshCw,
   BarChart2, PhoneCall, X, MessageSquare, CheckCircle,
-  Circle, Filter, History, Users, LogOut, Search, Briefcase, Receipt,
+  Circle, Filter, History, Users, LogOut, Search, Briefcase, Receipt, SlidersHorizontal,
 } from 'lucide-react';
 import { useData } from './hooks/useData';
 import { useAuth } from './hooks/useAuth';
 import { UsersView } from './views/UsersView';
+import { ParametresView } from './views/ParametresView';
 import { RecouvrementView } from './views/RecouvrementView';
 import { FacturationView } from './views/FacturationView';
 import type { Rappel, RecentCall } from './types';
@@ -2487,7 +2488,7 @@ function AnomaliesView({
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
-type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvrement' | 'facturation';
+type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvrement' | 'facturation' | 'parametres';
 
 export default function App() {
   const { user, login, logout }       = useAuth();
@@ -2546,6 +2547,9 @@ export default function App() {
     { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement'] },
     { id: 'facturation',  label: 'Facturation',        icon: Receipt,       visibleRoles: ['admin', 'facturation'] },
     { id: 'users',        label: 'Utilisateurs',      icon: Users,         visibleRoles: ['admin'] },
+    // ⚠️ Visible aussi pour les rôles métier : chacun y règle SES paramètres, et le
+    // serveur refuse les autres (colonne `module`). Le masquage n'est pas la sécurité.
+    { id: 'parametres',   label: 'Paramètres',        icon: SlidersHorizontal, visibleRoles: ['admin', 'recouvrement', 'facturation'] },
   ];
 
   const titleMap: Record<View, string> = {
@@ -2556,6 +2560,7 @@ export default function App() {
     recouvrement: 'Recouvrement',
     facturation:  'Facturation',
     users:        'Utilisateurs',
+    parametres:   'Paramètres',
   };
 
   return (
@@ -2781,6 +2786,7 @@ export default function App() {
               />
             )}
             {view === 'users'     && user.role === 'admin' && <UsersView currentUser={user} />}
+            {view === 'parametres' && <ParametresView user={user} />}
           </>
         ) : (
           <div style={{ textAlign: 'center', color: 'var(--muted)', marginTop: 80, fontSize: 14 }}>
