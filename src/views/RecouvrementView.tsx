@@ -1998,6 +1998,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           sondageEnCours={sondageEnCours}
           onSonder={sonderOrthop}
           onOuvrirRail={code => { setRailActif(code); setPorteeRail('jour'); changerAxe('rail'); }}
+          token={user.token}
         />
         </>
       )}

@@ -20,13 +20,14 @@
  * sans elle, l'écran aurait l'air d'avoir égaré 761 dossiers.
  */
 import { useMemo, useState } from 'react';
-import { ArrowRight, Search } from 'lucide-react';
+import { ArrowRight, FlaskConical, Search } from 'lucide-react';
 import type { Relance } from '../types';
 import {
   RAILS, RAILS_RELANCES, comptesDuRail, comptesGlobaux, etapeSuivante,
   type ComptesRail, type Rail, type EtatRail,
 } from '../lib/rails';
 import { Chip, CanalPuce, type Ton } from '../ui';
+import { TestRail } from './TestRail';
 
 /** Un rail = un état, donc `Chip` est le bon composant ici (contrairement aux canaux). */
 const TON_ETAT: Record<EtatRail, Ton> = {
@@ -68,7 +69,7 @@ export type SondeRail =
 
 export function ParcoursRails({
   relances, onOuvrirRail, comptesFacturation, aujourdhui,
-  sondes, sondageEnCours, onSonder,
+  sondes, sondageEnCours, onSonder, token,
 }: {
   relances: Relance[];
   onOuvrirRail: (code: string) => void;
@@ -79,8 +80,14 @@ export function ParcoursRails({
   sondes?: Record<string, SondeRail>;
   sondageEnCours?: boolean;
   onSonder?: () => void;
+  /**
+   * Sans jeton, le bouton « Tester » ne s'affiche pas : l'endpoint est authentifié, et un
+   * bouton qui échouerait systématiquement vaut moins qu'un bouton absent.
+   */
+  token?: string;
 }) {
   const [selection, setSelection] = useState<string>('R3');
+  const [railTeste, setRailTeste] = useState<Rail | null>(null);
 
   /** Un seul passage sur les données : neuf rails × 1054 lignes reste négligeable. */
   const comptes = useMemo(() => {
@@ -220,8 +227,17 @@ export function ParcoursRails({
           </div>
         </section>
 
-        <PanneauRail rail={railSel} comptes={cSel} onOuvrir={() => onOuvrirRail(railSel.code)} />
+        <PanneauRail
+          rail={railSel}
+          comptes={cSel}
+          onOuvrir={() => onOuvrirRail(railSel.code)}
+          onTester={token ? () => setRailTeste(railSel) : undefined}
+        />
       </div>
+
+      {railTeste && token && (
+        <TestRail rail={railTeste} token={token} onFermer={() => setRailTeste(null)} />
+      )}
     </div>
   );
 }
@@ -351,8 +367,8 @@ function Tuile({
  * pas d'automate qui n'existe pas.
  */
 function PanneauRail({
-  rail, comptes, onOuvrir,
-}: { rail: Rail; comptes?: ComptesRail; onOuvrir: () => void }) {
+  rail, comptes, onOuvrir, onTester,
+}: { rail: Rail; comptes?: ComptesRail; onOuvrir: () => void; onTester?: () => void }) {
   if (rail.source === 'facturation') {
     return (
       <aside style={carte}>
@@ -403,6 +419,25 @@ function PanneauRail({
         Ouvrir la liste{(c?.actifs ?? 0) > 0 ? ` (${c!.actifs})` : ''}
         <ArrowRight size={15} />
       </button>
+
+      {/* ⚠️ Propose sur TOUTES les etapes de relance, y compris celles qui n'ont pas encore
+          d'agent : la selection se mesure de toute facon, ce qui permet de jauger une etape
+          AVANT de la construire. Le panneau masque de lui-meme l'appel de test quand il n'y
+          a pas d'agent dedie. */}
+      {onTester && (
+        <button
+          onClick={onTester}
+          title="Voir qui serait appele, et pourquoi les autres ne le sont pas. Sans rien ecrire, sans rien envoyer."
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-2)',
+            padding: '8px var(--sp-4)', borderRadius: 'var(--r-md)',
+            border: '1px solid var(--border)', background: 'var(--surface)',
+            color: 'var(--text-2)', fontWeight: 600, fontSize: 'var(--fs-md)', cursor: 'pointer',
+          }}
+        >
+          <FlaskConical size={15} /> Tester cette étape
+        </button>
+      )}
 
       {rail.etat !== 'actif' && (
         <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)', lineHeight: 1.5 }}>
