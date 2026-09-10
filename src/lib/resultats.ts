@@ -40,6 +40,27 @@ import type { Relance } from '../types';
  */
 export const FENETRE_OBSERVATION = 14;
 
+/**
+ * ⚠️⚠️ `resolu_le` EST LA DATE À LAQUELLE ON A REGARDÉ, PAS CELLE DU RETOUR.
+ *
+ * Mesuré le 2026-09-10 : les 625 résolutions connues sont détectées sur **six jours
+ * seulement**, du 04/09 au 09/09 — rien avant. C'est exactement la mise en service du
+ * rattrapage glissant. Son premier passage a balayé 117 dossiers d'échéances allant du
+ * 27/08 au 04/09 : un arriéré, pas des retours du jour.
+ *
+ * Le symptôme qui l'avait trahi : la cohorte du 25/08 compte 57 résolus dont **zéro dans
+ * les dix jours**, quand sa voisine du 26/08 en compte 34 sur 51. Une telle marche n'est
+ * pas un comportement de patientes, c'est la date où l'on a commencé à regarder.
+ *
+ * Conséquence : un DÉLAI n'a de sens que si la détection était déjà quotidienne quand la
+ * cohorte est arrivée à échéance. Le TAUX, lui, reste juste — « a-t-elle renvoyé » ne
+ * dépend pas de la date de détection.
+ *
+ * ⚠️ À avancer si le rattrapage est un jour interrompu puis repris : la date ici est celle
+ * du début de la détection CONTINUE, pas celle du premier marquage.
+ */
+export const DEBUT_DETECTION_FIABLE = '2026-09-04';
+
 export interface DossierJuge {
   r: Relance;
   /** Jours écoulés depuis l'échéance. Négatif = pas encore échue → hors périmètre. */
@@ -48,6 +69,11 @@ export interface DossierJuge {
   resolu: boolean;
   /** Jours entre l'échéance et la résolution constatée. `null` si non résolu. */
   delai: number | null;
+  /**
+   * Le délai de ce dossier est-il interprétable ? Vrai seulement si son échéance tombe
+   * après le début de la détection continue — sinon `delai` mesure notre latence.
+   */
+  delaiFiable: boolean;
   /** Elle a parlé, ou un message vocal a réellement été déposé. */
   parVoix: boolean;
   /** Un SMS a été livré, ou un mail a abouti (livré / ouvert / cliqué). */
@@ -78,6 +104,8 @@ export interface Resultats {
   resolus: number;
   taux: number | null;
   delaiMedian: number | null;
+  /** Dossiers dont le délai est interprétable — l'échantillon de la courbe et de la médiane. */
+  baseDelai: number;
   joints: Groupe;
   nonJoints: Groupe;
   /** ⚠️ Groupes qui SE RECOUVRENT : un dossier peut être joint par plusieurs canaux. */
@@ -119,7 +147,9 @@ export function jugerDossier(r: Relance, auj: string = aujourdhuiIso()): Dossier
   const parEcrit = r.sms_statut === 'livre'
     || r.email_statut === 'livre' || r.email_statut === 'ouvert' || r.email_statut === 'clique';
 
-  return { r, age, resolu, delai, parVoix, parEcrit, joint: parVoix || parEcrit };
+  const delaiFiable = String(r.date_echeance) >= DEBUT_DETECTION_FIABLE;
+
+  return { r, age, resolu, delai, delaiFiable, parVoix, parEcrit, joint: parVoix || parEcrit };
 }
 
 export function calculerResultats(lignes: Relance[], auj: string = aujourdhuiIso()): Resultats {
@@ -131,7 +161,10 @@ export function calculerResultats(lignes: Relance[], auj: string = aujourdhuiIso
 
   const resolus = obs.filter(j => j.resolu);
 
-  const delais = resolus.map(j => j.delai).filter((d): d is number => d !== null).sort((a, b) => a - b);
+  // ⚠️ Uniquement les délais INTERPRÉTABLES : inclure les cohortes antérieures au
+  // rattrapage donnerait une médiane qui mesure notre latence de détection.
+  const delais = resolus.filter(j => j.delaiFiable)
+    .map(j => j.delai).filter((d): d is number => d !== null).sort((a, b) => a - b);
   const delaiMedian = delais.length
     ? (delais.length % 2 ? delais[(delais.length - 1) / 2]
                          : (delais[delais.length / 2 - 1] + delais[delais.length / 2]) / 2)
@@ -161,9 +194,16 @@ export function calculerResultats(lignes: Relance[], auj: string = aujourdhuiIso
   // Au jour N, seuls les dossiers ayant atteint l'âge N entrent au dénominateur. Sans ça,
   // les cohortes fraîches (qui n'ont pas encore eu le temps de renouveler) écraseraient
   // mécaniquement le taux des jours élevés.
+  // ⚠️ Et surtout : uniquement les dossiers dont le délai est interprétable, sinon la
+  // courbe dessine la date de nos passages de rattrapage, pas le retour des patientes.
+  // Elle s'arrête donc à l'âge le plus élevé qu'un tel dossier puisse avoir aujourd'hui —
+  // elle s'allongera d'un jour par jour.
+  const fiables = obs.filter(j => j.delaiFiable);
+  const ageObservable = Math.max(0, Math.min(FENETRE_OBSERVATION,
+    ecartJours(DEBUT_DETECTION_FIABLE, auj)));
   const courbe: PointCourbe[] = [];
-  for (let n = 0; n <= FENETRE_OBSERVATION; n++) {
-    const base = obs.filter(j => j.age >= n);
+  for (let n = 0; n <= ageObservable; n++) {
+    const base = fiables.filter(j => j.age >= n);
     const r = base.filter(j => j.delai !== null && j.delai <= n).length;
     courbe.push({ age: n, base: base.length, resolus: r, taux: base.length ? r / base.length : 0 });
   }
@@ -191,6 +231,7 @@ export function calculerResultats(lignes: Relance[], auj: string = aujourdhuiIso
     resolus: resolus.length,
     taux: tauxDe(obs.length, resolus.length),
     delaiMedian,
+    baseDelai: fiables.length,
     joints, nonJoints, parCanal, courbe, cohortes,
     horsFenetre: obs.filter(j => j.age > FENETRE_OBSERVATION).length,
   };

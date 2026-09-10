@@ -15,8 +15,10 @@ import type { Relance } from '../types';
 import { Chip, DataTable, tdDiscret, tdStyle } from '../ui';
 import { formatDate } from '../lib/format';
 import {
-  calculerResultats, pourcent, FENETRE_OBSERVATION, type PointCourbe,
+  calculerResultats, pourcent, FENETRE_OBSERVATION, DEBUT_DETECTION_FIABLE,
+  type PointCourbe,
 } from '../lib/resultats';
+import { formatDate as fmtDate } from '../lib/format';
 
 const carte: React.CSSProperties = {
   background: 'var(--surface)', border: '1px solid var(--border)',
@@ -51,6 +53,10 @@ export function ResultatsRecouvrement({ relances, aujourdhui }: {
           {r.delaiMedian !== null && (
             <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: 4 }}>
               Délai médian : <strong>{r.delaiMedian} jour{r.delaiMedian > 1 ? 's' : ''}</strong> après l’échéance
+              <br />
+              <span style={{ fontSize: 'var(--fs-xs)' }}>
+                sur les {r.baseDelai} dossiers dont le délai est interprétable
+              </span>
             </div>
           )}
         </div>
@@ -101,7 +107,23 @@ export function ResultatsRecouvrement({ relances, aujourdhui }: {
           écraseraient mécaniquement les jours élevés.
         </p>
 
-        <Courbe points={r.courbe} />
+        <Avertissement titre="Mesuré sur une base restreinte, et voici pourquoi">
+          <code>resolu_le</code> est la date à laquelle <strong>on a regardé</strong>, pas celle
+          du retour. La détection quotidienne n’a démarré que le{' '}
+          <strong>{fmtDate(DEBUT_DETECTION_FIABLE)}</strong> : son premier passage a balayé un
+          arriéré de plus de cent dossiers d’un coup. Avant cette date, un « délai » mesurerait
+          notre latence, pas le comportement des patientes. La courbe ne retient donc que les{' '}
+          <strong>{r.baseDelai} dossiers</strong> échus depuis, et s’allonge d’un jour par jour.
+        </Avertissement>
+
+        <div style={{ marginTop: 'var(--sp-3)' }}>
+          {r.baseDelai === 0
+            ? <p style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>
+                Aucune cohorte n’est encore échue depuis le début de la détection continue :
+                la courbe apparaîtra dès le premier jour mesurable.
+              </p>
+            : <Courbe points={r.courbe} />}
+        </div>
 
         {chiffres && (
           <div style={{ marginTop: 'var(--sp-3)' }}>
