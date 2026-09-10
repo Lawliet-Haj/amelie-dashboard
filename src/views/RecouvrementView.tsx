@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
+import { ResultatsRecouvrement } from './ResultatsRecouvrement';
 import { railParCode, lignesDuRail, etapeSuivante, ecartEcheance, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
@@ -1222,7 +1223,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [batches, setBatches]               = useState<BatchGroup[]>([]);
   const [loading, setLoading]               = useState(true);
   const [error, setError]                   = useState('');
-  const [activeTab, setActiveTab]           = useState<'relances' | 'campagnes'>('relances');
+  const [activeTab, setActiveTab]           = useState<'relances' | 'resultats' | 'campagnes'>('relances');
   const [showImport, setShowImport]         = useState(false);
   const [showManual, setShowManual]         = useState(false);
   const [showOrthop, setShowOrthop]         = useState(false);
@@ -1936,6 +1937,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 12, padding: 4, gap: 2 }}>
           {([
             { id: 'relances' as const, label: 'Relances', count: relances.length },
+            // `count: 0` volontairement : un TAUX n'est pas un compte, et afficher le nombre
+            // de dossiers resolus dans la pastille laisserait croire a une file de travail.
+            { id: 'resultats' as const, label: 'Résultats', count: 0, icon: <TrendingUp size={13} /> },
             { id: 'campagnes' as const, label: 'Campagnes', count: batches.length, icon: <Layers size={13} /> },
           ]).map(tab => {
             const active = activeTab === tab.id;
@@ -1972,6 +1976,11 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       </div>
 
       {/* ── Campagnes tab ───────────────────────────────────────────────────── */}
+      {/* Resultats : combien de patientes relancees ont renvoye leur ordonnance. */}
+      {activeTab === 'resultats' && (
+        <ResultatsRecouvrement relances={relances} aujourdhui={jourCourant} />
+      )}
+
       {activeTab === 'campagnes' && (
         <CampagnesView
           batches={batches}
