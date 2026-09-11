@@ -24,9 +24,18 @@ const OU_CA_AGIT: Record<string, string> = {
   seuil_sms_brevo: 'Cron « Alerte Crédits Brevo », tous les jours à 8h30',
   seuil_mail_brevo: 'Cron « Alerte Crédits Brevo », tous les jours à 8h30',
   alerte_destinataire: 'Destinataire de l’alerte de crédits uniquement',
-  appels_par_passage: 'Sélection d’appels du cron Recouvrement (12h30 → 13h55)',
-  plafond_tentatives: 'Sélection d’appels du cron Recouvrement',
-  delai_rappel_minutes: 'Sélection d’appels du cron Recouvrement',
+  /*
+   * ⚠️ LA CADENCE D'APPELS EST RÉGLABLE PAR RAIL depuis le 2026-09-11. Chaque cron lit
+   * d'abord SA clé, puis retombe sur `appels_par_passage`, puis sur 10 — une cascade de
+   * `COALESCE` en SQL, jamais une expression n8n (qui rendrait vide et produirait une
+   * requête invalide, donc zéro appel en silence).
+   * Les trois niveaux ont été éprouvés en base : clé propre, clé absente, table vide.
+   */
+  appels_par_passage_j1: 'LIMIT du cron J+1 (12h30 → 13h55, toutes les 5 min)',
+  appels_par_passage_j7: 'LIMIT du cron J+7 (15h30 → 16h55, toutes les 5 min)',
+  appels_par_passage: 'Repli, pour un rail qui n’a pas son propre réglage',
+  plafond_tentatives: 'Sélection d’appels des deux crons Recouvrement',
+  delai_rappel_minutes: 'Sélection d’appels des deux crons Recouvrement',
   recouvrement: 'Coupe les appels et le repli SMS+mail du cron Recouvrement',
   facturation: 'Coupe les envois SMS et mail du cron Facturation',
 };
@@ -81,9 +90,14 @@ export function ParametresView({ user }: { user: AuthUser }) {
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--sp-4)',
                     flexWrap: 'wrap', marginBottom: 'var(--sp-4)' }}>
         <div style={{ flexGrow: 1, minWidth: 260 }}>
-          <h2 style={{ fontSize: 'var(--fs-2xl)', fontWeight: 800, marginBottom: 'var(--sp-1)' }}>
-            Paramètres
-          </h2>
+          {/*
+            ⚠️ PAS DE TITRE ICI : `App` affiche déjà « Paramètres » et la date dans son
+            en-tête de page. En remettre un donnait le titre EN DOUBLE à l'écran — le
+            même défaut qu'avait eu Facturation. Une vue de module donne une ligne de
+            contexte, jamais son titre. Son bouton « Actualiser » reste ici, lui, parce
+            que c'est le seul qui recharge vraiment les réglages : l'en-tête n'en affiche
+            plus (voir `enteteActualise` dans App.tsx).
+          */}
           <p style={{ fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>
             Les réglages que les automatisations lisent à chaque passage. Une modification
             prend effet au passage suivant, sans redémarrage.

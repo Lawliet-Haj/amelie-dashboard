@@ -2563,6 +2563,31 @@ export default function App() {
     parametres:   'Paramètres',
   };
 
+  /**
+   * ⚠️⚠️ QUI PORTE LE BOUTON « ACTUALISER » — un `Record<View, …>`, PAS un ternaire.
+   *
+   * Les vues des modules lisent leurs PROPRES endpoints et portent donc leur propre
+   * bouton. L'en-tête de page ne doit pas en afficher un second : celui-ci rafraîchit
+   * `useData` (les données de l'entrant), dont ces vues ne se servent pas — il aurait
+   * l'air d'agir sans rien faire, juste à côté d'un bouton qui agit vraiment.
+   *
+   * La règle vivait dans un `view !== 'facturation'`, et le doublon est revenu DEUX fois
+   * (Facturation, puis Paramètres) : on oublie d'étendre un ternaire. Un
+   * `Record<View, boolean>` est EXHAUSTIF — ajouter une vue à l'union `View` ne compile
+   * plus tant que la question n'a pas été tranchée ici. C'est déjà ce qui protège
+   * `titleMap` juste au-dessus, et ce qui l'a empêché, lui, de dériver.
+   */
+  const enteteActualise: Record<View, boolean> = {
+    overview:     true,
+    appels:       true,
+    rappels:      true,
+    anomalies:    true,
+    users:        true,
+    recouvrement: false,
+    facturation:  false,
+    parametres:   false,
+  };
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg)' }}>
 
@@ -2736,13 +2761,8 @@ export default function App() {
               {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' })}
             </p>
           </div>
-          {/*
-            Masqué sur Facturation : ce bouton rafraîchit les données de l'entrant
-            (`useData`), dont cette vue ne se sert pas — il aurait donc l'air de faire
-            quelque chose sans rien faire, à côté du bouton « Actualiser » de la vue.
-            Recouvrement a la même particularité, laissée en place pour l'instant.
-          */}
-          {view !== 'facturation' && (
+          {/* Qui l'affiche, et pourquoi : voir `enteteActualise` plus haut. */}
+          {enteteActualise[view] && (
             <button onClick={handleRefresh} className="btn btn-ghost">
               <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
               Actualiser
