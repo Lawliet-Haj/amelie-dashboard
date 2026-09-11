@@ -23,7 +23,7 @@ import { Chip, DataTable, Portal, tdDiscret, tdStyle, type Ton } from '../ui';
 import { ecartEcheance, type Rail } from '../lib/rails';
 import { formatDateLongue, formatDateTime, normalizePhoneFr } from '../lib/format';
 import {
-  appelTestRail, selectionRail, transcriptTest,
+  appelTestRail, envoiTestRail, selectionRail, transcriptTest, type EnvoiTest,
   type AppelTest, type Selection, type TranscriptTest,
 } from '../lib/railTest';
 
@@ -41,6 +41,19 @@ const carte: React.CSSProperties = {
   borderRadius: 'var(--r-lg)', padding: 'var(--sp-4)',
 };
 
+const champ: React.CSSProperties = {
+  padding: '8px var(--sp-3)', borderRadius: 'var(--r-md)',
+  border: '1px solid var(--border)', fontSize: 'var(--fs-md)',
+  background: 'white', color: 'var(--text)',
+};
+
+/** Un champ dont on ne devine pas le rôle mérite son étiquette, pas seulement un repère grisé. */
+const etiquette: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 3,
+  fontSize: 'var(--fs-xs)', fontWeight: 700, color: 'var(--muted)',
+  fontFamily: 'Lexend,sans-serif',
+};
+
 export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string; onFermer: () => void }) {
   const ecart = ecartEcheance(rail);
   const testableParAppel = rail.actions.some(a => a.canal === 'appel' && a.etat === 'actif');
@@ -50,7 +63,38 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
   const [chargement, setChargement] = useState(false);
 
   const [tel, setTel] = useState('');
+  /**
+   * Ce que l'agent doit croire du dossier appelé. Sans ces trois champs, on ne testait
+   * qu'un cas : « Madame Test », échéance = celle de l'étape. Or c'est justement le
+   * contenu du message qu'on veut éprouver étape par étape.
+   */
+  const [prenom, setPrenom] = useState('');
+  const [nom, setNom] = useState('');
+  /**
+   * L'échéance annoncée, en ISO. Vide = le serveur prend celle de l'étape.
+   *
+   * ⚠️ Elle est PRÉ-REMPLIE avec `sel.date_visee`, c'est-à-dire la date que le SERVEUR
+   * dit avoir interrogée — jamais une date recalculée ici. C'est la même discipline que
+   * partout dans ce projet : l'écran ne redérive pas l'échelle des rails, il affiche ce
+   * que le serveur a réellement utilisé.
+   */
+  const [dateEch, setDateEch] = useState('');
+  const [dateTouchee, setDateTouchee] = useState(false);
   const [confirme, setConfirme] = useState(false);
+
+  /**
+   * Les ÉCRITS : le SMS et le mail que la production envoie après l'appel.
+   *
+   * ⚠️ Le mail n'existe pas sur tous les rails — le J+7 en est privé par décision client.
+   * On le déduit de la définition du rail (`actions`), sans recopier de table de canaux :
+   * le serveur a la sienne, et une seconde copie ici divergerait tôt ou tard.
+   */
+  const mailEnProd = rail.actions.some(a => a.canal === 'mail' && a.etat === 'actif');
+  const [email, setEmail] = useState('');
+  const [avecEcrits, setAvecEcrits] = useState(false);
+  const [envoi, setEnvoi] = useState<EnvoiTest | null>(null);
+  const [erreurEnvoi, setErreurEnvoi] = useState('');
+  const [envoiEnCours, setEnvoiEnCours] = useState(false);
   const [appel, setAppel] = useState<AppelTest | null>(null);
   const [erreurAppel, setErreurAppel] = useState('');
   const [appelEnCours, setAppelEnCours] = useState(false);
@@ -62,15 +106,33 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
   const charger = useCallback(async () => {
     setChargement(true); setErreurSel('');
     const r = await selectionRail(token, rail.code, ecart);
-    if (r.ok) setSel(r.data); else { setSel(null); setErreurSel(r.erreur); }
+    if (r.ok) {
+      setSel(r.data);
+      // La date de l'étape, telle que le serveur l'a interrogée. On ne l'impose qu'une
+      // fois : dès que l'opérateur y a touché, son choix l'emporte sur un rechargement.
+      if (!dateTouchee) setDateEch(r.data.date_visee);
+    } else { setSel(null); setErreurSel(r.erreur); }
     setChargement(false);
-  }, [token, rail.code, ecart]);
+  }, [token, rail.code, ecart, dateTouchee]);
 
   useEffect(() => { void charger(); }, [charger]);
 
+  /** Ce que l'agent doit croire du dossier — commun à l'appel et aux écrits. */
+  function identite() {
+    return {
+      telephone: normalizePhoneFr(tel) || tel,
+      // Vides, le serveur retombe sur « Madame Test » et sur la date de l'étape.
+      prenom: prenom.trim() || undefined,
+      nom: nom.trim() || undefined,
+      email: email.trim() || undefined,
+      dateEcheance: dateEch || undefined,
+    };
+  }
+
   async function lancerAppel() {
     setAppelEnCours(true); setErreurAppel(''); setAppel(null); setTr(null); setErreurTr('');
-    const r = await appelTestRail(token, rail.code, ecart, normalizePhoneFr(tel) || tel);
+    setEnvoi(null); setErreurEnvoi('');
+    const r = await appelTestRail(token, rail.code, ecart, identite());
     if (r.ok) setAppel(r.data);
     else {
       setErreurAppel(r.erreur);
@@ -79,6 +141,22 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
       if (d.dossiers?.length) setAppel(d);
     }
     setAppelEnCours(false);
+    // ⚠️ Les écrits ne partent QUE si l'appel a abouti — comme en production, où c'est le
+    // post-call qui les déclenche. Les envoyer après un appel refusé donnerait une image
+    // fausse de l'enchaînement.
+    if (r.ok && avecEcrits) await lancerEcrits();
+  }
+
+  async function lancerEcrits() {
+    setEnvoiEnCours(true); setErreurEnvoi(''); setEnvoi(null);
+    const r = await envoiTestRail(token, rail.code, identite());
+    if (r.ok) setEnvoi(r.data);
+    else {
+      setErreurEnvoi(r.erreur);
+      const d = r as unknown as EnvoiTest;
+      if (d.dossiers?.length) setEnvoi(d);
+    }
+    setEnvoiEnCours(false);
   }
 
   async function relire() {
@@ -197,7 +275,7 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
 
                 <DataTable
                   hauteurMax="38vh"
-                  colonnes={['Verdict', 'Dossier', 'Téléphone', 'Statut', 'Tent.', 'SMS', 'Mail', 'Dernier appel']}
+                  colonnes={['Verdict', 'Dossier', 'Téléphone', 'Statut', 'Tent.', 'SMS', 'Mail', 'Dernier appel', '']}
                   vide={sel.lignes.length === 0 ? 'Aucun dossier sur cette étape aujourd’hui.' : undefined}
                 >
                   {sel.lignes.map(l => (
@@ -216,6 +294,28 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                       <td style={tdDiscret}>{l.sms_statut || '—'}</td>
                       <td style={tdDiscret}>{l.email_statut || '—'}</td>
                       <td style={tdDiscret}>{l.dernier_appel ? formatDateTime(l.dernier_appel) : '—'}</td>
+                      {/*
+                        Reprendre l'identité de ce dossier pour l'appel de test.
+                        ⚠️ Le TÉLÉPHONE n'est PAS recopié — c'est celui d'une patiente, et
+                        le serveur le refuserait de toute façon. On entend donc ce que CE
+                        dossier entendrait, sur son propre numéro à soi.
+                        ⚠️ L'échéance vient de `sel.date_visee` et non d'une colonne : par
+                        construction, toutes les lignes d'une étape la partagent.
+                      */}
+                      <td style={tdDiscret}>
+                        <button
+                          onClick={() => {
+                            setPrenom(l.prenom || '');
+                            setNom(l.nom || '');
+                            setDateTouchee(false);
+                            setDateEch(sel.date_visee);
+                          }}
+                          title="Reprendre le prénom, le nom et l’échéance de ce dossier — sans son numéro"
+                          style={boutonDiscret}
+                        >
+                          reprendre
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </DataTable>
@@ -244,9 +344,52 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                 <p style={{ fontSize: 'var(--fs-md)', color: 'var(--text-2)', lineHeight: 1.55,
                             marginBottom: 'var(--sp-3)' }}>
                   Un appel réel est passé avec l’agent de cette étape, vers le numéro que vous
-                  indiquez. <strong>Rien n’est écrit et rien n’est envoyé</strong> : aucune ligne
-                  de relance ne portant cet appel, le post-call s’arrête de lui-même — ni SMS,
-                  ni mail, ni statut, ni journal.
+                  indiquez. <strong>L’appel seul n’écrit rien et n’envoie rien</strong> : aucune
+                  ligne de relance ne portant cet appel, le post-call s’arrête de lui-même — ni
+                  SMS, ni mail, ni statut, ni journal. Les écrits, eux, se demandent
+                  explicitement ci-dessous.
+                </p>
+
+                {/* ── Ce que l'agent doit croire du dossier ─────────────────── */}
+                <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap',
+                              alignItems: 'flex-end', marginBottom: 'var(--sp-3)' }}>
+                  <label style={etiquette}>
+                    Prénom annoncé
+                    <input value={prenom} onChange={e => setPrenom(e.target.value)}
+                           placeholder="Madame" style={{ ...champ, minWidth: 130 }} />
+                  </label>
+                  <label style={etiquette}>
+                    Nom annoncé
+                    <input value={nom} onChange={e => setNom(e.target.value)}
+                           placeholder="Test" style={{ ...champ, minWidth: 130 }} />
+                  </label>
+                  <label style={etiquette}>
+                    Échéance annoncée
+                    <input type="date" value={dateEch}
+                           onChange={e => { setDateTouchee(true); setDateEch(e.target.value); }}
+                           style={{ ...champ, minWidth: 150 }} />
+                  </label>
+                  {mailEnProd && (
+                    <label style={etiquette}>
+                      Votre adresse (pour le mail)
+                      <input value={email} onChange={e => setEmail(e.target.value)}
+                             placeholder="vous@exemple.fr" style={{ ...champ, minWidth: 210 }} />
+                    </label>
+                  )}
+                  {dateTouchee && sel && dateEch !== sel.date_visee && (
+                    <button onClick={() => { setDateTouchee(false); setDateEch(sel.date_visee); }}
+                            style={{ ...boutonDiscret, marginBottom: 2 }}
+                            title={`Revenir à la date de l’étape (${sel.date_visee})`}>
+                      revenir à l’étape
+                    </button>
+                  )}
+                </div>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)',
+                            marginBottom: 'var(--sp-3)', lineHeight: 1.5 }}>
+                  Laissés vides, l’agent dit « Madame Test » et annonce la date de l’étape.
+                  Le bouton <strong>« reprendre »</strong> d’une ligne du tableau ci-dessus
+                  recopie l’identité et l’échéance de ce dossier — l’appel part toujours
+                  vers <em>votre</em> numéro.
                 </p>
 
                 <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap',
@@ -279,6 +422,71 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                     <Phone size={15} /> {appelEnCours ? 'appel en cours…' : 'Appeler pour tester'}
                   </button>
                 </div>
+
+                {/* ── Les écrits : le SMS et le mail que la production envoie après ── */}
+                <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap',
+                              alignItems: 'center', marginTop: 'var(--sp-3)' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)',
+                                  fontSize: 'var(--fs-sm)', color: 'var(--text-2)' }}>
+                    <input type="checkbox" checked={avecEcrits}
+                           onChange={e => setAvecEcrits(e.target.checked)} />
+                    Envoyer aussi le SMS{mailEnProd ? ' et le mail' : ''} après l’appel
+                  </label>
+                  <button
+                    onClick={() => void lancerEcrits()}
+                    disabled={!confirme || tel.trim().length < 6 || envoiEnCours}
+                    title="Envoie les écrits seuls, sans passer d’appel — pour relire le texte du SMS et le rendu du mail"
+                    style={{ ...boutonDiscret, opacity: !confirme || envoiEnCours ? 0.5 : 1 }}
+                  >
+                    {envoiEnCours ? 'envoi…' : 'Envoyer les écrits sans appeler'}
+                  </button>
+                </div>
+                <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)',
+                            marginTop: 'var(--sp-2)', lineHeight: 1.5 }}>
+                  Ce sont de <strong>vrais envois</strong>, facturés par Brevo — mais ils ne
+                  touchent aucune ligne de relance : le SMS part sans demande de rapport de
+                  livraison, et le tag du mail est inconnu du suivi.
+                  {!mailEnProd && ' Cette étape n’envoie pas de mail en production : seul le SMS partira.'}
+                </p>
+
+                {erreurEnvoi && (
+                  <Bandeau ton="echec" titre="Envoi refusé">
+                    {erreurEnvoi}
+                    {envoi?.dossiers?.length ? (
+                      <ul style={{ margin: 'var(--sp-2) 0 0', paddingLeft: 18 }}>
+                        {envoi.dossiers.map(d => (
+                          <li key={d.id}>#{d.id} — {d.qui || 'sans nom'} (échéance {d.echeance})</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </Bandeau>
+                )}
+
+                {envoi && !envoi.dossiers?.length && (
+                  <div style={{ marginTop: 'var(--sp-3)' }}>
+                    <Bandeau ton={envoi.sms.envoye ? 'ok' : 'attente'} titre="Écrits">
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span>
+                          <strong>SMS</strong> — {envoi.sms.envoye
+                            ? `parti vers ${envoi.sms.vers}`
+                            : `NON parti : ${envoi.sms.erreur}`}
+                        </span>
+                        <span>
+                          <strong>Mail</strong> — {envoi.mail.envoye
+                            ? `parti vers ${envoi.mail.vers} (modèle ${envoi.mail.modele})`
+                            : (envoi.mail.raison || `NON parti : ${envoi.mail.erreur}`)}
+                        </span>
+                      </div>
+                      {/* Le texte exact parti, à relire mot pour mot : c'est la seule
+                          facon de verifier qu'il n'a pas divergé de la production. */}
+                      <pre style={{
+                        margin: 'var(--sp-2) 0 0', padding: 'var(--sp-2)',
+                        background: 'var(--st-neutre-bg)', borderRadius: 'var(--r-sm)',
+                        fontSize: 'var(--fs-xs)', whiteSpace: 'pre-wrap', fontFamily: 'inherit',
+                      }}>{envoi.sms.contenu}</pre>
+                    </Bandeau>
+                  </div>
+                )}
 
                 {erreurAppel && (
                   <Bandeau ton="echec" titre="Appel refusé">

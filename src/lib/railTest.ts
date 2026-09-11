@@ -146,19 +146,99 @@ export function selectionRail(token: string, rail: string, ecart: number) {
 }
 
 /**
+ * Ce que l'agent doit croire du dossier qu'il appelle.
+ *
+ * ⚠️ Des champs NOMMÉS, pas des positions : `prenom`, `nom` et la date sont trois chaînes
+ * de suite, donc trois occasions de les inverser sans qu'aucun compilateur ne s'en
+ * aperçoive — et l'erreur ne s'entendrait qu'au téléphone.
+ */
+export interface IdentiteTest {
+  /** Le numéro composé. Le serveur refuse celui d'une patiente. */
+  telephone: string;
+  prenom?: string;
+  nom?: string;
+  /**
+   * L'adresse du mail de test.
+   *
+   * ⚠️ Elle est cherchée dans `relances` ET `facturation` par le même garde-fou que le
+   * numéro : on ne peut pas écrire à une patiente en croyant tester. Transmise aussi sur
+   * `appel_test`, pour que ce contrôle ait lieu AVANT que l'appel ne parte.
+   */
+  email?: string;
+  /**
+   * L'échéance que l'agent ANNONCERA, en ISO (`AAAA-MM-JJ`).
+   *
+   * ⚠️ Omise, le serveur retombe sur la date de l'étape testée — le comportement d'avant.
+   * Le formatage en français reste côté serveur : la réponse renvoie
+   * `date_echeance_annoncee`, qui est exactement la chaîne prononcée.
+   */
+  dateEcheance?: string;
+}
+
+/**
  * Passe UN appel réel avec l'agent du rail, vers le numéro fourni.
  *
  * ⚠️ `confirme: true` est exigé par le serveur : un appel de test compose un vrai numéro.
  * ⚠️ Le serveur refuse un numéro présent dans `relances` (voir l'en-tête du fichier).
  */
-export function appelTestRail(
-  token: string, rail: string, ecart: number, telephone: string,
-  prenom?: string, nom?: string,
-) {
+export function appelTestRail(token: string, rail: string, ecart: number, qui: IdentiteTest) {
   return appeler<AppelTest>(
     token,
-    { action: 'appel_test', rail, ecart, telephone, prenom, nom, confirme: true },
+    {
+      action: 'appel_test', rail, ecart, confirme: true,
+      telephone: qui.telephone,
+      prenom: qui.prenom,
+      nom: qui.nom,
+      email: qui.email,
+      date_echeance: qui.dateEcheance,
+    },
     60000,
+  );
+}
+
+/** Ce que le serveur rend après un envoi de test. */
+export interface EnvoiTest {
+  refuse?: boolean;
+  tag: string;
+  /** `contenu` est le texte EXACT parti — c'est ce qu'on veut relire. */
+  sms: { envoye: boolean; vers: string; message_id: string | null; contenu: string; erreur: string | null };
+  mail: {
+    envoye: boolean; vers?: string | null; message_id?: string | null;
+    modele?: number; erreur?: string | null;
+    /** Pourquoi aucun mail n'est parti : rail sans mail, ou adresse absente. */
+    raison?: string;
+  };
+  /** Les dossiers qui portent ce numéro ou cette adresse, quand le garde-fou refuse. */
+  dossiers?: { id: number; qui: string; echeance: string }[];
+  sans_effet?: string;
+  erreur?: string | null;
+}
+
+/**
+ * Envoie le SMS et le mail de relance de l'étape, vers VOS coordonnées.
+ *
+ * ⚠️⚠️ CE SONT DE VRAIS ENVOIS, facturés par Brevo — contrairement à l'appel de test, ils
+ * ne sont pas « sans effet » chez l'opérateur. Ce qui reste vrai, c'est qu'ils ne touchent
+ * AUCUNE ligne de relance :
+ *   • le SMS part **sans `webUrl`**, donc W8 ne recevra jamais son rapport de livraison —
+ *     sans quoi, ne trouvant pas le tag, il classerait l'échec en SMS ENTRANT et créerait
+ *     un faux rappel plus une alerte e-mail ;
+ *   • le tag du mail est inconnu de W19, qui ne met alors à jour aucune ligne, en silence.
+ *
+ * ⚠️ Les canaux suivent la production, rail par rail : le J+7 n'envoie pas de mail.
+ * ⚠️ Le texte du SMS est une COPIE de celui de W3 — voir le nœud `Build Ecrits Test`.
+ */
+export function envoiTestRail(token: string, rail: string, qui: IdentiteTest) {
+  return appeler<EnvoiTest>(
+    token,
+    {
+      action: 'envoi_test', rail, confirme: true,
+      telephone: qui.telephone,
+      prenom: qui.prenom,
+      nom: qui.nom,
+      email: qui.email,
+    },
+    45000,
   );
 }
 
