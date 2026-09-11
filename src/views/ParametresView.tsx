@@ -23,7 +23,6 @@ import {
 const OU_CA_AGIT: Record<string, string> = {
   seuil_sms_brevo: 'Cron « Alerte Crédits Brevo », tous les jours à 8h30',
   seuil_mail_brevo: 'Cron « Alerte Crédits Brevo », tous les jours à 8h30',
-  alerte_destinataire: 'Destinataire de l’alerte de crédits uniquement',
   /*
    * ⚠️ LA CADENCE D'APPELS EST RÉGLABLE PAR RAIL depuis le 2026-09-11. Chaque cron lit
    * d'abord SA clé, puis retombe sur `appels_par_passage`, puis sur 10 — une cascade de
@@ -36,6 +35,9 @@ const OU_CA_AGIT: Record<string, string> = {
   appels_par_passage: 'Repli, pour un rail qui n’a pas son propre réglage',
   plafond_tentatives: 'Sélection d’appels des deux crons Recouvrement',
   delai_rappel_minutes: 'Sélection d’appels des deux crons Recouvrement',
+  alerte_mecontentement: 'Cron « Alerte Recouvrement », toutes les 15 min',
+  alerte_ordonnance_envoyee: 'Cron « Alerte Recouvrement », toutes les 15 min',
+  alerte_destinataire: 'Alerte de crédits Brevo ET signalements de recouvrement',
   recouvrement: 'Coupe les appels et le repli SMS+mail du cron Recouvrement',
   facturation: 'Coupe les envois SMS et mail du cron Facturation',
 };
@@ -64,8 +66,8 @@ export function ParametresView({ user }: { user: AuthUser }) {
   const valeurs = useMemo(() => (reglages || []).filter(r => r.type !== 'bool'), [reglages]);
   const interrupteurs = useMemo(() => (reglages || []).filter(r => r.type === 'bool'), [reglages]);
 
-  const enregistrer = async (r: Reglage) => {
-    const brouillon = (brouillons[r.cle] ?? r.valeur).trim();
+  const enregistrer = async (r: Reglage, valeurExplicite?: string) => {
+    const brouillon = (valeurExplicite ?? brouillons[r.cle] ?? r.valeur).trim();
     if (brouillon === r.valeur) return;
     setEnCours(r.cle);
     const res = await reglerReglage(user.token, r.cle, brouillon);
@@ -163,6 +165,45 @@ export function ParametresView({ user }: { user: AuthUser }) {
                       {r.modifie_le && <> le {formatDateTime(r.modifie_le)}</>}</>}
                   </p>
                 </div>
+                {/* ⚠️ Un `oui_non` se règle en UN clic, sans champ libre ni bouton « Enregistrer ».
+                    Un champ de saisie laisserait écrire « Oui », « yes » ou rien — et comme le
+                    serveur ne coupe que sur exactement « non », la faute de frappe passerait
+                    inaperçue en laissant l'alerte allumée. Deux boutons ne peuvent pas se
+                    tromper de vocabulaire. */}
+                {r.type === 'oui_non' ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+                  <div style={{ display: 'flex', border: '1px solid var(--border)',
+                                borderRadius: 'var(--r-md)', overflow: 'hidden' }}>
+                    {(['oui', 'non'] as const).map(v => {
+                      const actif = (r.valeur || 'oui').trim().toLowerCase() !== 'non'
+                        ? v === 'oui' : v === 'non';
+                      return (
+                        <button key={v}
+                          onClick={() => enregistrer(r, v)}
+                          disabled={!modifiable || enCours === r.cle || actif}
+                          title={v === 'oui' ? 'Recevoir ce signalement par e-mail'
+                                             : 'Ne plus recevoir ce signalement'}
+                          style={{
+                            padding: '7px 18px', border: 'none', fontFamily: 'Lexend,sans-serif',
+                            fontSize: 'var(--fs-sm)', fontWeight: 700,
+                            cursor: !modifiable || actif ? 'default' : 'pointer',
+                            background: actif ? (v === 'oui' ? 'var(--st-ok-fg)' : 'var(--st-neutre-bg)')
+                                              : 'white',
+                            color: actif ? (v === 'oui' ? '#fff' : 'var(--muted)') : 'var(--muted)',
+                            opacity: modifiable ? 1 : .6,
+                          }}>
+                          {v === 'oui' ? 'Oui' : 'Non'}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {enCours === r.cle && (
+                    <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>…</span>
+                  )}
+                  {etat === 'ko' && <X size={14} color="var(--st-echec-fg)" />}
+                  {etat === 'ok' && <Check size={14} color="var(--st-ok-fg)" />}
+                </div>
+                ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
                   <input
                     value={brouillon}
@@ -203,6 +244,7 @@ export function ParametresView({ user }: { user: AuthUser }) {
                       : enCours === r.cle ? 'Enregistrement…' : 'Enregistrer'}
                   </button>
                 </div>
+                )}
               </div>
             );
           })}

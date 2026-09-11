@@ -22,10 +22,22 @@ const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
 export type CleReglage = 'recouvrement' | 'facturation';
 
 /**
- * `bool` → c'est `en_pause` qui fait foi. `nombre` / `texte` → c'est `valeur`.
+ * `bool` → c'est `en_pause` qui fait foi. `nombre` / `texte` / `oui_non` → c'est `valeur`.
  * ⚠️ Sans ce champ, un lecteur ne saurait pas laquelle des deux colonnes lire.
+ *
+ * ⚠⚠ `oui_non` N'EST PAS `bool`, et la distinction est délibérée. `bool` est réservé aux
+ * interrupteurs de PAUSE : ils vivent dans `en_pause`, portent un motif, se pilotent depuis
+ * les écrans métier « où l'on voit ce qu'on arrête », et l'écran Paramètres ne fait que les
+ * afficher. Un `oui_non` est un réglage ordinaire, rangé dans `valeur` comme un nombre, et
+ * il se règle là où il se lit. Les confondre rendrait les deux pauses modifiables depuis
+ * Paramètres — exactement ce que leur placement cherche à empêcher.
+ *
+ * ⚠️ Côté serveur, la lecture d'un `oui_non` est « éteinte seulement sur ordre » :
+ * les requêtes testent `<> 'non'`, jamais `= 'oui'`. Une valeur vide, mal orthographiée ou
+ * une clé absente laisse donc l'alerte ACTIVE. Pour une alerte, le silence est le pire état
+ * — même parti que l'alerte de crédits Brevo, où une lecture qui échoue alerte aussi.
  */
-export type TypeReglage = 'bool' | 'nombre' | 'texte';
+export type TypeReglage = 'bool' | 'nombre' | 'texte' | 'oui_non';
 
 export interface Reglage {
   cle: CleReglage | string;
