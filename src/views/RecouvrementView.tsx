@@ -3,8 +3,8 @@ import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
 import { ResultatsRecouvrement } from './ResultatsRecouvrement';
 import {
-  railParCode, railDeRelance, lignesDuRail, etapeSuivante, ecartEcheance, RAILS_RELANCES,
-  aRattraper, echeancesARattraper, type PorteeRail,
+  railParCode, railDeRelance, railAtteint, ecritsDeRelance, lignesDuRail, etapeSuivante,
+  ecartEcheance, RAILS_RELANCES, aRattraper, echeancesARattraper, type PorteeRail,
 } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
@@ -290,17 +290,27 @@ async function extractOrthop(token: string, date: string, dryRun = false): Promi
   }
 }
 /**
- * Envoie le SMS et le mail de relance à une patiente, SANS passer d'appel.
+ * Envoie les écrits de relance à une patiente, SANS passer d'appel.
  * Sert aux dossiers injoignables : après plusieurs tentatives infructueuses, le SMS et le
  * mail restent les seuls canaux. Rien n'est envoyé automatiquement — uniquement sur clic.
  * Les numéros fixes sont écartés côté serveur (ils ne peuvent pas recevoir de SMS).
+ *
+ * ⚠️⚠️ LES CANAUX DÉPENDENT DU RAIL, et c'est le SERVEUR qui trie. On lui envoie l'étape
+ * atteinte par le dossier ; lui seul sait quels canaux elle porte (`RAILS_AVEC_MAIL`).
+ * Un navigateur qui choisirait les canaux pourrait faire partir n'importe quoi, et c'est
+ * la règle déjà posée pour les textes de SMS, qui vivent dans n8n et pas ici.
+ *
+ * ⚠️ Le serveur est FERMANT sur le mail : sans rail, il n'envoie que le SMS. Un bundle
+ * périmé enverra donc moins, jamais un mail retiré du parcours.
  */
-async function sendRelance(token: string, id: number): Promise<{ ok: boolean; sms?: string; mail?: string; erreur?: string }> {
+async function sendRelance(
+  token: string, relance: Relance,
+): Promise<{ ok: boolean; sms?: string; mail?: string; rail?: string; erreur?: string }> {
   try {
     const r = await fetch(`${API_BASE}/webhook/dashboard-send-relance`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify({ id: relance.id, rail: railAtteint(relance)?.code ?? null }),
       signal: AbortSignal.timeout(30000),
     });
     if (!r.ok) return { ok: false, erreur: `Le serveur a répondu ${r.status}` };
@@ -1622,15 +1632,32 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                                 {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
                                 {callingId === r.id ? '…' : 'Appeler'}
                               </button>
-                              {/* Envoi SMS + mail sans appel — pour les dossiers injoignables. */}
+                              {/* Envoi des écrits sans appel — pour les dossiers injoignables.
+                                  ⚠️ Les canaux dépendent de l'étape ATTEINTE : le client a retiré
+                                  le mail à partir du J+7. Le bouton dit donc ce qu'il enverra —
+                                  « SMS » seul là où le mail n'est plus du parcours. */}
+                              {(() => {
+                                const ec = ecritsDeRelance(r, jourCourant);
+                                const rien = !ec.sms && !ec.mail;
+                                const quoi = ec.sms && ec.mail ? 'le SMS et le mail' : ec.sms ? 'le SMS' : ec.mail ? 'le mail' : '';
+                                return (
                               <button
                                 onClick={() => handleSend(r)}
-                                disabled={sendingId === r.id || (!r.email && !r.telephone)}
-                                title={`Envoyer le SMS et le mail de relance à ${r.prenom || ''} ${r.nom || ''}`.trim() + ' — sans passer d’appel'}
-                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 9px', background: sendingId === r.id ? '#fffbeb' : 'white', border: `1px solid ${sendingId === r.id ? '#fde68a' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, fontWeight: 600, color: sendingId === r.id ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: (!r.email && !r.telephone) ? 0.3 : 1, whiteSpace: 'nowrap' }}
+                                disabled={sendingId === r.id || rien}
+                                title={rien
+                                  ? (r.email && !ec.mail
+                                      ? `Aucun écrit possible : le mail est retiré du parcours à l’étape ${ec.rail?.libelle ?? 'atteinte'}, et ce numéro ne reçoit pas de SMS.`
+                                      : 'Aucun canal disponible pour cette patiente.')
+                                  : `Envoyer ${quoi} de relance à ${r.prenom || ''} ${r.nom || ''}`.trim()
+                                    + ' — sans passer d’appel'
+                                    + (ec.sms && !ec.mail && r.email ? ` (mail retiré du parcours à l’étape ${ec.rail?.libelle ?? ''})`.replace(' )', ')') : '')}
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 9px', background: sendingId === r.id ? '#fffbeb' : 'white', border: `1px solid ${sendingId === r.id ? '#fde68a' : '#c7d2fe'}`, borderRadius: 8, fontSize: 11.5, fontWeight: 600, color: sendingId === r.id ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: rien ? 0.3 : 1, whiteSpace: 'nowrap' }}
                               >
                                 {sendingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Send size={11} />}
+                                {!rien && !ec.mail && <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .2 }}>SMS</span>}
                               </button>
+                                );
+                              })()}
                               <button onClick={() => setEditTarget(r)} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '5px 8px', background: 'white', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 11.5, fontWeight: 500, color: '#64748b', cursor: 'pointer' }}>
                                 <Edit2 size={11} />
                               </button>
@@ -1765,8 +1792,32 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   );
   const totalARattraper = rattrapage.reduce((n, e) => n + e.aRattraper, 0);
   const batchCandidates = filtered.filter(r => selected.has(r.id) && r.telephone && r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert');
-  // Envoi SMS + mail : toute ligne selectionnee disposant d'au moins un canal.
-  const sendCandidates  = filtered.filter(r => selected.has(r.id) && (r.email || r.telephone));
+  // Envoi des ecrits : toute ligne selectionnee disposant d'au moins un canal ENCORE OUVERT
+  // a son etape. Un dossier sans mobile passe le J+7 n'a plus rien a recevoir : l'inclure
+  // ferait annoncer « N relances » pour un lot dont une partie ne peut rien envoyer.
+  const sendCandidates  = filtered.filter(r => {
+    if (!selected.has(r.id)) return false;
+    const e = ecritsDeRelance(r, jourCourant);
+    return e.sms || e.mail;
+  });
+  /**
+   * Ce que le lot enverrait vraiment. ⚠️ Le bouton annonçait « SMS + mail » quelle que soit
+   * la sélection : sur un lot J+7, le mail n'est jamais parti et ne devait pas partir, mais
+   * l'écran promettait le contraire. `sansMail` compte les lignes dont l'adresse existe et
+   * dont le mail est retiré à leur étape — la seule explication utile à afficher.
+   */
+  const sendLot = useMemo(() => {
+    let mails = 0, sms = 0, sansMail = 0;
+    for (const r of sendCandidates) {
+      const e = ecritsDeRelance(r, jourCourant);
+      if (e.mail) mails++; else if (r.email) sansMail++;
+      if (e.sms) sms++;
+    }
+    return {
+      mails, sms, sansMail,
+      libelle: mails && sms ? 'SMS + mail' : mails ? 'Mail' : 'SMS',
+    };
+  }, [sendCandidates, jourCourant]);
 
   function toggleSelect(id: number) { setSelected(p => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   // Sélectionne TOUTES les lignes affichées (filtrées). Sert à l'appel en lot (re-filtré
@@ -1954,18 +2005,22 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
    * centaine de lignes passe malgré tout en moins d'une minute.
    */
   async function sendBulk() {
-    const cibles = filtered.filter(r => selected.has(r.id) && (r.email || r.telephone));
+    const cibles = sendCandidates;
     if (!cibles.length) return;
     setBulkSend({ total: cibles.length, done: 0, sms: 0, mail: 0, echecs: 0 });
-    let i = 0, sms = 0, mail = 0, echecs = 0, done = 0;
+    let i = 0, sms = 0, mail = 0, echecs = 0, done = 0, horsRail = 0;
     const worker = async () => {
       while (i < cibles.length) {
         const r = cibles[i++];
-        const res = await sendRelance(user.token, r.id);
+        const res = await sendRelance(user.token, r);
         if (!res.ok) echecs++;
         else {
           if (res.sms === 'envoye') sms++;
           if (res.mail === 'envoye') mail++;
+          // ⚠️ Compte a part : un mail non parti parce que son rail ne le porte plus n'est
+          // NI un envoi NI un echec. Le noyer dans l'un des deux rendrait le recapitulatif
+          // faux dans un sens ou dans l'autre.
+          if (res.mail === 'hors_rail') horsRail++;
           if (res.sms === 'echec_envoi' || res.mail === 'echec_envoi') echecs++;
         }
         done++;
@@ -1977,7 +2032,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     clearSelect();
     setCallMsg({
       type: echecs ? 'error' : 'success',
-      text: `${done} relance(s) traitée(s) : ${sms} SMS, ${mail} mail(s)` + (echecs ? `, ${echecs} échec(s).` : '.'),
+      text: `${done} relance(s) traitée(s) : ${sms} SMS, ${mail} mail(s)`
+        + (horsRail ? `, ${horsRail} mail(s) non envoyé(s) — retiré(s) du parcours à leur étape` : '')
+        + (echecs ? `, ${echecs} échec(s).` : '.'),
     });
     load();
   }
@@ -1985,7 +2042,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   // Envoi manuel du SMS + mail, sans appel. Utile après plusieurs tentatives infructueuses.
   async function handleSend(r: Relance) {
     setSendingId(r.id);
-    const res = await sendRelance(user.token, r.id);
+    const res = await sendRelance(user.token, r);
     setSendingId(null);
     if (!res.ok) { setCallMsg({ type: 'error', text: res.erreur || 'Envoi impossible.' }); return; }
     const parts: string[] = [];
@@ -1994,6 +2051,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     else if (res.sms === 'non_applicable') parts.push('pas de SMS (numéro fixe)');
     if (res.mail === 'envoye') parts.push('mail envoyé');
     else if (res.mail === 'echec_envoi') parts.push('mail refusé par Brevo');
+    // ⚠️ Dire POURQUOI le mail n'est pas parti : « retiré du parcours » est une décision,
+    // pas une panne. Sans cette phrase, l'absence de mail sur un J+7 passerait pour un bug.
+    else if (res.mail === 'hors_rail') parts.push(`pas de mail (retiré du parcours à l’étape ${res.rail ? railParCode(res.rail)?.libelle ?? res.rail : 'atteinte'})`);
     else if (res.mail === 'non_applicable') parts.push('pas de mail (adresse absente)');
     const echec = res.sms === 'echec_envoi' || res.mail === 'echec_envoi';
     setCallMsg({ type: echec ? 'error' : 'success', text: `${r.prenom || ''} ${r.nom || ''}`.trim() + ' : ' + parts.join(', ') + '.' });
@@ -2390,13 +2450,18 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                 <button onClick={() => runBatch()} disabled={batchCandidates.length === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
                   <Play size={11} /> Appeler {batchCandidates.length} (≤{batchSize} actifs)
                 </button>
-                {/* Envoi SMS + mail en lot, sans appel. */}
+                {/* Envoi des écrits en lot, sans appel. ⚠️ Le libellé suit la sélection : un lot
+                    où aucune ligne ne peut recevoir de mail (étapes J+7 et au-delà) annonce
+                    « SMS », pour qu'on ne découvre pas après coup qu'un canal n'est pas parti. */}
                 <button onClick={sendBulk} disabled={!!bulkSend || sendCandidates.length === 0}
-                  title="Envoyer le SMS et le mail de relance aux lignes sélectionnées, sans passer d'appel"
+                  title={`Envoyer ${sendLot.libelle} de relance aux lignes sélectionnées, sans passer d’appel`
+                    + (sendLot.mails === 0 && sendLot.sansMail > 0
+                        ? ` — le mail est retiré du parcours à partir du J+7 (${sendLot.sansMail} ligne(s) concernée(s))`
+                        : '')}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: bulkSend ? '#fffbeb' : 'white', border: `1px solid ${bulkSend ? '#fde68a' : '#c7d2fe'}`, borderRadius: 7, fontSize: 12, fontWeight: 700, color: bulkSend ? '#b45309' : '#4338ca', cursor: 'pointer', opacity: sendCandidates.length === 0 ? 0.4 : 1 }}>
                   {bulkSend
                     ? <><RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> {bulkSend.done}/{bulkSend.total}</>
-                    : <><Send size={11} /> SMS + mail ({sendCandidates.length})</>}
+                    : <><Send size={11} /> {sendLot.libelle} ({sendCandidates.length})</>}
                 </button>
                 {bulkDel === 'confirm' ? (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

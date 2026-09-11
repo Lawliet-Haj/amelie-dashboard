@@ -35,7 +35,7 @@
  * cosmétique — mesuré le jour même, le rail J+1 compte **86** dossiers avec le bon écart
  * contre **10** sans.
  */
-import { aujourdhuiIso, decalerJours, ecartJours, jourLocal } from './format';
+import { aujourdhuiIso, decalerJours, ecartJours, isFixe, jourLocal } from './format';
 import type { Relance } from '../types';
 
 export type SourceRail = 'facturation' | 'relances';
@@ -255,6 +255,66 @@ export function railDeRelance(r: Relance, auj: string = aujourdhuiIso()): Rail |
   const j = ecartJours(r.date_echeance, auj);
   if (!Number.isFinite(j) || j < 0) return null;
   return RAILS_RELANCES.find(x => ecartEcheance(x) === j) ?? null;
+}
+
+/**
+ * Jusqu'où ce dossier est-il ALLÉ dans le parcours ? La dernière étape dépassée.
+ *
+ * ⚠️ À ne pas confondre avec `railDeRelance()`, qui répond « a-t-elle un rendez-vous
+ * AUJOURD'HUI ». Celle-là est `null` pour 81 % du stock — les dossiers en transit entre
+ * deux étapes. Or un envoi manuel se fait justement n'importe quel jour, sur un dossier
+ * injoignable : il faut donc savoir où il en est, pas s'il est pile sur une étape.
+ *
+ * `null` a un seul sens ici : **pas encore entrée dans le parcours** (échéance absente ou
+ * à venir).
+ */
+export function railAtteint(r: Relance, auj: string = aujourdhuiIso()): Rail | null {
+  if (!r.date_echeance) return null;
+  const j = ecartJours(r.date_echeance, auj);
+  if (!Number.isFinite(j) || j < 0) return null;
+  // Les rails sont en écarts strictement croissants : le dernier dépassé est le sien.
+  let atteint: Rail | null = null;
+  for (const x of RAILS_RELANCES) if (ecartEcheance(x) <= j) atteint = x;
+  return atteint;
+}
+
+/**
+ * ── QUELS ÉCRITS PEUT-ON ENCORE ENVOYER À LA MAIN ? ───────────────────────────
+ *
+ * Le bouton ✈ envoyait le SMS **et** le mail à toute ligne en portant les coordonnées,
+ * sans jamais regarder le parcours. Or le client a **retiré le mail à partir du J+7**
+ * (`R4`, action `mail` en `retire`) : sur ces dossiers le bouton contredisait sa décision.
+ * Mesuré le 2026-09-11 : **44 dossiers sur l'étape J+7, les 44 avec une adresse valide**,
+ * et 566 dossiers ayant dépassé le J+7.
+ *
+ * ⚠️ Le SMS, lui, reste ouvert à TOUTES les étapes. C'est la raison d'être du bouton :
+ * joindre une patiente qu'on n'arrive pas à avoir au téléphone. Le retirer sur les étapes
+ * dont le parcours automatique ne prévoit pas de SMS enlèverait un moyen d'action sans que
+ * personne ne l'ait demandé.
+ *
+ * ⚠️ Le mail concerné est celui de la relance ordonnance (modèle Brevo 353). Les étapes
+ * J+14 et suivantes prévoient un mail de **contentieux**, qui n'existe pas encore et qui
+ * n'est pas celui-ci : elles comptent donc parmi les rails « sans mail ».
+ *
+ * ⚠️⚠️ Cette fonction dit ce qui est PERMIS ; c'est le serveur qui tranche réellement
+ * (`RAILS_AVEC_MAIL` dans W-Envoi-Relance). Un navigateur ne décide pas des canaux — il
+ * envoie le rail et lit ce que le serveur a fait. Les deux doivent rester d'accord.
+ */
+export function mailDansLeRail(rail: Rail | null): boolean {
+  if (!rail) return true;   // pas encore dans le parcours : rien ne l'a retiré
+  return rail.actions.some(a => a.canal === 'mail' && a.etat === 'actif');
+}
+
+/** Ce que le bouton ✈ enverrait vraiment à cette patiente, aujourd'hui. */
+export function ecritsDeRelance(
+  r: Relance, auj: string = aujourdhuiIso(),
+): { sms: boolean; mail: boolean; rail: Rail | null } {
+  const rail = railAtteint(r, auj);
+  return {
+    sms: Boolean(r.telephone) && !isFixe(r.telephone),
+    mail: Boolean(r.email) && mailDansLeRail(rail),
+    rail,
+  };
 }
 
 /** L'étape suivante du parcours, ou `null` si c'est la dernière. */
