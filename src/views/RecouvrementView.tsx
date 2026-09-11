@@ -343,7 +343,40 @@ function endpointAppel(relance: Relance): string {
     : 'dashboard-trigger-call';
 }
 
+/**
+ * ⚠⚠ LE TRONC SIP LIMITE LES APPELS **PAR SECONDE**, PAS SEULEMENT LES SIMULTANÉS.
+ *
+ * Mesuré le 2026-09-11 : 18 appels lancés en 2,3 s depuis ce pool, **8 refusés** par
+ * ElevenLabs avec `sip status: 503: Trunk CPS limit exceeded. Region: de1`. CPS = Calls Per
+ * Second. Le pool bornait la SIMULTANÉITÉ (N appels en ligne à la fois) et pas le débit
+ * d’allumage : ses N workers démarrent tous dans le même tick, et se libèrent souvent
+ * ensemble quand plusieurs appels se terminent en même temps.
+ *
+ * ⚠️ Un refus CPS coûte une TENTATIVE à la patiente sans qu’elle soit appelée : W12
+ * incrémente `nb_tentatives` AVANT d’appeler. Huit dossiers du 11/09 sont restés
+ * « À appeler » avec une tentative consommée.
+ *
+ * Ce cadenceur sérialise les DÉPARTS — jamais les attentes de fin d’appel, qui restent
+ * parallèles. Il ne réduit donc pas le débit réel : un appel dure des dizaines de secondes,
+ * l’espacement coûte une seconde. Même correctif que le `batching` posé sur les deux crons.
+ */
+const ESPACEMENT_LANCEMENT_MS = 1200;
+let dernierLancement = 0;
+let filePaceur: Promise<void> = Promise.resolve();
+function attendreCreneauDappel(): Promise<void> {
+  // La chaîne de promesses est le verrou : chaque appelant s’ajoute à la file et ne repart
+  // qu’après le précédent. Un simple `Date.now()` partagé ne suffirait pas — dix workers
+  // qui le lisent dans le même tick verraient tous le même créneau libre.
+  filePaceur = filePaceur.then(async () => {
+    const attente = ESPACEMENT_LANCEMENT_MS - (Date.now() - dernierLancement);
+    if (attente > 0) await new Promise(r => setTimeout(r, attente));
+    dernierLancement = Date.now();
+  });
+  return filePaceur;
+}
+
 async function triggerOutboundCall(token: string, relance: Relance): Promise<{ ok: boolean; conversation_id?: string }> {
+  await attendreCreneauDappel();
   try { const r = await fetch(`${API_BASE}/webhook/${endpointAppel(relance)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: relance.id, telephone: relance.telephone, nom: relance.nom, prenom: relance.prenom, date_echeance: relance.date_echeance, date_debut_location: relance.date_debut_location }), signal: AbortSignal.timeout(15000) }); return r.json(); } catch { return { ok: false }; }
 }
 async function updateRelance(token: string, id: number, fields: object): Promise<boolean> {
