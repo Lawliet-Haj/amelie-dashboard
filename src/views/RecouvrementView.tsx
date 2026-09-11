@@ -2,7 +2,10 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
 import { ResultatsRecouvrement } from './ResultatsRecouvrement';
-import { railParCode, lignesDuRail, etapeSuivante, ecartEcheance, RAILS_RELANCES, type PorteeRail } from '../lib/rails';
+import {
+  railParCode, railDeRelance, lignesDuRail, etapeSuivante, ecartEcheance, RAILS_RELANCES,
+  aRattraper, echeancesARattraper, type PorteeRail,
+} from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
 
@@ -305,8 +308,33 @@ async function sendRelance(token: string, id: number): Promise<{ ok: boolean; sm
     return Array.isArray(j) ? (j[0] ?? { ok: false, erreur: 'Réponse vide' }) : j;
   } catch { return { ok: false, erreur: 'Serveur indisponible.' }; }
 }
+/**
+ * ⚠️⚠️ CHAQUE RAIL A SON PROPRE ENDPOINT, PARCE QU'IL A SON PROPRE AGENT.
+ *
+ * `dashboard-trigger-call` (W12) porte l'agent J+1 **en dur** ; `dashboard-trigger-call-j7`
+ * en est le jumeau avec l'agent J+7. Ce n'est pas un paramètre : l'identifiant d'agent reste
+ * côté serveur, un navigateur n'a pas à le connaître.
+ *
+ * Jusqu'au 2026-09-11 le dashboard appelait TOUJOURS le premier. Lancer un dossier J+7 à la
+ * main avait donc trois effets, dont un qui contredit une décision client :
+ *   • la patiente réentendait le script du PREMIER appel ;
+ *   • l'agent J+1 ayant `post_call_webhook_id = null`, le post-call partait vers **W3**,
+ *     qui **envoie un mail après chaque appel** — or le rail J+7 n'en envoie pas ;
+ *   • aucune entrée `rail: 'J7'` dans `relance_evenements`.
+ *
+ * ⚠️ Le rail se DÉDUIT de l'écart de dates, il n'est stocké nulle part : `railDeRelance()`
+ * est la seule source, et elle porte déjà le décalage `date_echeance + (N − 1)`.
+ * ⚠️ Les étapes sans agent dédié (J+14 et au-delà) retombent sur l'agent J+1 : c'est le seul
+ * qui existe, et c'était déjà le comportement. À revoir le jour où elles seront construites.
+ */
+function endpointAppel(relance: Relance): string {
+  return railDeRelance(relance)?.code === 'R4'
+    ? 'dashboard-trigger-call-j7'
+    : 'dashboard-trigger-call';
+}
+
 async function triggerOutboundCall(token: string, relance: Relance): Promise<{ ok: boolean; conversation_id?: string }> {
-  try { const r = await fetch(`${API_BASE}/webhook/dashboard-trigger-call`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: relance.id, telephone: relance.telephone, nom: relance.nom, prenom: relance.prenom, date_echeance: relance.date_echeance, date_debut_location: relance.date_debut_location }), signal: AbortSignal.timeout(15000) }); return r.json(); } catch { return { ok: false }; }
+  try { const r = await fetch(`${API_BASE}/webhook/${endpointAppel(relance)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id: relance.id, telephone: relance.telephone, nom: relance.nom, prenom: relance.prenom, date_echeance: relance.date_echeance, date_debut_location: relance.date_debut_location }), signal: AbortSignal.timeout(15000) }); return r.json(); } catch { return { ok: false }; }
 }
 async function updateRelance(token: string, id: number, fields: object): Promise<boolean> {
   try { const r = await fetch(`${API_BASE}/webhook/dashboard-update-relance`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ id, ...fields }), signal: AbortSignal.timeout(8000) }); const j = await r.json(); return j.ok; } catch { return false; }
@@ -1411,6 +1439,8 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [batchSize, setBatchSize]           = useState(10);
   const [batch, setBatch]                   = useState<BatchState | null>(null);
   const cancelBatchRef                      = useRef(false);
+  // Rattrapage d'une echeance sautee (pause, n8n a terre) — voir `aRattraper` dans rails.ts
+  const [voirRattrapage, setVoirRattrapage] = useState(false);
   // Panels
   const [transcriptTarget, setTranscriptTarget] = useState<Relance | null>(null);
   const [historyPhone, setHistoryPhone]     = useState<string | null>(null);
@@ -1722,6 +1752,18 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   // et uniquement sur le périmètre de la journée affichée.
   const aVerifier = scope.filter(r => r.ordonnance_deja_envoyee);
   const enEchec   = scope.filter(r => r.echec_motif);
+  /**
+   * ⚠️ LE RATTRAPAGE SE CALCULE SUR TOUTES LES RELANCES, pas sur `scope`.
+   * Les deux bandeaux ci-dessus portent volontairement sur la journée affichée. Celui-ci
+   * ne peut PAS : une échéance sautée est par nature hors du cadrage courant — le
+   * sélecteur de journée montre aujourd'hui — donc la chercher dans `scope` la rendrait
+   * invisible exactement quand elle compte.
+   */
+  const rattrapage = useMemo(
+    () => echeancesARattraper(relances, jourCourant),
+    [relances, jourCourant],
+  );
+  const totalARattraper = rattrapage.reduce((n, e) => n + e.aRattraper, 0);
   const batchCandidates = filtered.filter(r => selected.has(r.id) && r.telephone && r.statut !== 'Répondu SMS' && r.statut !== 'Répondu transfert');
   // Envoi SMS + mail : toute ligne selectionnee disposant d'au moins un canal.
   const sendCandidates  = filtered.filter(r => selected.has(r.id) && (r.email || r.telephone));
@@ -1737,8 +1779,14 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   // Lance tous les contacts sélectionnés avec AU PLUS `batchSize` appels actifs à la fois.
   // Concurrence PRÉCISE : chaque slot attend la FIN RÉELLE de son appel (statut EL) avant
   // d'en lancer un nouveau → dès qu'un appel se termine, le suivant part immédiatement.
-  async function runBatch() {
-    const candidates = batchCandidates;
+  // ⚠️ `cibles` sert au rattrapage d'une échéance sautée : ses lignes sont HORS du
+  // périmètre affiché, donc hors de `batchCandidates` qui part de la sélection. Le pool,
+  // la concurrence et l'annulation sont exactement les mêmes — un seul mécanisme d'appel
+  // en lot, éprouvé, plutôt qu'un second à maintenir en parallèle.
+  // ⚠️ Appelé depuis un `onClick`, il DOIT l'être via `() => runBatch()` : passer la
+  // référence nue livrerait l'évènement souris comme liste de cibles.
+  async function runBatch(cibles?: Relance[]) {
+    const candidates = cibles ?? batchCandidates;
     if (candidates.length === 0) return;
     cancelBatchRef.current = false;
     const total = candidates.length;
@@ -1769,6 +1817,110 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     setBatch(p => p ? { ...p, finished: true } : p);
     setSelected(new Set());
   }
+
+  /** Les lignes qu'un rattrapage appellerait pour cette échéance. Même règle que le bandeau. */
+  const ciblesRattrapage = (date: string) =>
+    relances.filter(r => r.date_echeance === date && aRattraper(r, jourCourant));
+
+  /**
+   * ── LE BANDEAU DE RATTRAPAGE ──────────────────────────────────────────────────
+   *
+   * Rendu dans les DEUX branches de l'écran (parcours et vues opérationnelles), comme
+   * `barreAxes()` : c'est sur le parcours qu'on arrive, et une échéance sautée ne doit pas
+   * attendre qu'on pense à changer d'axe pour se signaler.
+   *
+   * ⚠️ Il ne s'affiche que s'il y a réellement à rattraper — la règle de l'écran depuis la
+   * refonte du 25/08 : zéro interface quand tout va bien. Un bandeau permanent « 0 à
+   * rattraper » cesserait d'être lu, et c'est précisément ce qu'on ne veut pas ici.
+   */
+  const bandeauRattrapage = () => {
+    if (totalARattraper === 0) return null;
+    const n = rattrapage.length;
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <ArrowRightCircle size={15} style={{ color: '#c2410c', flexShrink: 0 }} />
+        <p style={{ fontSize: 12.5, color: '#9a3412', margin: 0, flex: 1, lineHeight: 1.5 }}>
+          <strong>{totalARattraper}</strong> dossier{totalARattraper > 1 ? 's' : ''} jamais appelé
+          {totalARattraper > 1 ? 's' : ''} sur <strong>{n}</strong> échéance{n > 1 ? 's' : ''} passée{n > 1 ? 's' : ''}.
+          {' '}Le cron ne traite que l’échéance du jour : ces journées ne repartiront pas d’elles-mêmes.
+        </p>
+        <button onClick={() => setVoirRattrapage(true)}
+          style={{ padding: '5px 12px', background: '#c2410c', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
+          Rattraper une date
+        </button>
+      </div>
+    );
+  };
+
+  /**
+   * Le panneau : une ligne par échéance, le compte réellement appelable, et le lancement.
+   *
+   * ⚠️ Le lancement passe par `runBatch`, donc par W12 — le même chemin que le bouton
+   * « Appeler » d'une ligne. Il n'est PAS soumis à l'interrupteur de pause, et c'est
+   * cohérent avec la règle déjà posée : la pause vise l'automate, « un humain peut
+   * toujours décider d'appeler ». Le bandeau de pause reste affiché juste au-dessus, donc
+   * l'état du module est sous les yeux au moment du clic.
+   */
+  const panneauRattrapage = () => {
+    if (!voirRattrapage) return null;
+    return (
+      <Portal>
+        <div onClick={() => setVoirRattrapage(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: 'white', borderRadius: 14, width: 'min(560px, 100%)', maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 50px rgba(15,23,42,.28)' }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 15.5, fontWeight: 800, margin: 0, color: 'var(--text)' }}>
+                Rattraper une échéance sautée
+              </h3>
+              <p style={{ fontSize: 12, color: 'var(--muted)', margin: '5px 0 0', lineHeight: 1.55 }}>
+                Ces journées n’ont jamais été appelées — module en pause, ou n8n indisponible.
+                Le compte affiché est celui que le cron aurait pris : ordonnance non reçue,
+                jamais jointe, ni par la voix ni par un écrit livré.
+              </p>
+            </div>
+
+            <div style={{ overflowY: 'auto', padding: '8px 12px' }}>
+              {rattrapage.map(e => {
+                const cibles = ciblesRattrapage(e.date);
+                return (
+                  <div key={e.date} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif' }}>
+                        {formatDateLongue(e.date)}
+                      </div>
+                      <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 2 }}>
+                        il y a {e.jours} jour{e.jours > 1 ? 's' : ''} · {e.total} dossier{e.total > 1 ? 's' : ''} sur cette échéance
+                      </div>
+                    </div>
+                    <Chip ton={e.aRattraper > 20 ? 'echec' : 'attente'} texte={`${e.aRattraper} à appeler`} />
+                    <button
+                      onClick={() => { setVoirRattrapage(false); runBatch(cibles); }}
+                      disabled={cibles.length === 0}
+                      title={`Lance ${cibles.length} appel(s) avec l’agent du premier appel, ≤${batchSize} actifs à la fois`}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: cibles.length ? 'pointer' : 'not-allowed', opacity: cibles.length ? 1 : .5, flexShrink: 0 }}>
+                      <Play size={11} /> Appeler {cibles.length}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: 0, flex: 1, lineHeight: 1.5 }}>
+                L’agent annonce la date d’échéance explicitement, jamais « hier » : le
+                message reste exact même sur une échéance ancienne.
+              </p>
+              <button onClick={() => setVoirRattrapage(false)}
+                style={{ padding: '6px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'var(--text)', cursor: 'pointer' }}>
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      </Portal>
+    );
+  };
 
   async function handleCall(r: Relance) {
     if (!r.telephone) return;
@@ -2000,6 +2152,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
             Choisissez une étape ci-dessous, ou passez à une vue opérationnelle.
           </span>
         </div>
+        {bandeauRattrapage()}
         <ParcoursRails
           relances={relances}
           aujourdhui={jourCourant}
@@ -2176,6 +2329,8 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           </div>
 
           {/* ── Bandeaux d'action : visibles uniquement s'il y a à faire ────── */}
+          {/* Celui-ci porte sur TOUTES les relances, pas sur la journée affichée. */}
+          {bandeauRattrapage()}
           {aVerifier.length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 10, flexWrap: 'wrap' }}>
               <AlertCircle size={15} style={{ color: '#b45309', flexShrink: 0 }} />
@@ -2232,7 +2387,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                     <option value={20}>20</option>
                   </select>
                 </div>
-                <button onClick={runBatch} disabled={batchCandidates.length === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
+                <button onClick={() => runBatch()} disabled={batchCandidates.length === 0} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: '#4f46e5', border: 'none', borderRadius: 7, fontSize: 12, fontWeight: 700, color: 'white', cursor: 'pointer' }}>
                   <Play size={11} /> Appeler {batchCandidates.length} (≤{batchSize} actifs)
                 </button>
                 {/* Envoi SMS + mail en lot, sans appel. */}
@@ -2334,6 +2489,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       {editTarget && <EditModal relance={editTarget} token={user.token} onClose={() => setEditTarget(null)} onSaved={u => handleEditSaved(editTarget.id, u)} />}
       {transcriptTarget && <TranscriptPanel relance={transcriptTarget} onClose={() => setTranscriptTarget(null)} />}
       {historyPhone && <HistoryPanel telephone={historyPhone} token={user.token} onClose={() => setHistoryPhone(null)} />}
+      {panneauRattrapage()}
       {batch && <BatchModal batch={batch} onClose={() => { setBatch(null); load(); }} onCancel={() => { cancelBatchRef.current = true; setBatch(p => p ? { ...p, finished: true } : p); }} />}
     </div>
   );

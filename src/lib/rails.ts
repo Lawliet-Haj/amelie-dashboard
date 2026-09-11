@@ -385,6 +385,89 @@ export function quotaEpuise(r: Relance): boolean {
 }
 
 /**
+ * ── LE RATTRAPAGE D'UNE ÉCHÉANCE SAUTÉE ───────────────────────────────────────
+ *
+ * Le cron d'appels ne prend que `date_echeance = CURRENT_DATE` (décision du 2026-09-09).
+ * Une journée où il n'a pas tourné — module en pause, n8n à terre — est donc perdue
+ * SANS AUCUN RATTRAPAGE : sa cohorte n'a plus qu'à attendre l'étape suivante, cinq à six
+ * jours plus tard, servie par un agent dont le message suppose un premier contact déjà
+ * passé.
+ *
+ * Mesuré en base le 2026-09-10, au lendemain d'une pause : l'échéance du 09/09 portait
+ * **86 dossiers, 0 appelé**. Six autres échéances traînaient de 1 à 11 dossiers jamais
+ * appelés — 117 en tout.
+ *
+ * ⚠️⚠️ « SAUTÉE » VEUT DIRE JAMAIS APPELÉE, et non « mal appelée ». Une ligne appelée une
+ * fois puis restée `Non répondu` n'a été privée de rien : elle a été servie, et c'est
+ * l'étape suivante qui la reprend. Le rattrapage ne vise donc QUE `nb_tentatives = 0`,
+ * sans quoi il doublerait le travail des rails au lieu de combler leur trou.
+ *
+ * ⚠️⚠️ Ces conditions sont le MIROIR de `PG Cibles Appels`, moins la borne de date — qui
+ * est précisément l'objet du rattrapage. Si l'une des deux change sans l'autre, cet écran
+ * annoncera « N à rattraper » là où un lancement ne partirait sur personne.
+ *
+ * ⚠️ L'agent J+1 annonce la date d'échéance EXPLICITEMENT (« votre prescription est
+ * arrivée à échéance le {{date_echeance}} »), jamais « hier ». Un rattrapage tardif reste
+ * donc exact — c'est ce qui rend l'opération jouable sur une échéance vieille de dix
+ * jours. Ne pas remplacer cette date par un mot relatif dans le prompt.
+ */
+export function aRattraper(r: Relance, auj: string = aujourdhuiIso()): boolean {
+  if (!r.date_echeance || !r.telephone) return false;
+  // ⚠️ L'échéance DU JOUR n'est pas sautée : le cron passe à 12h30. L'afficher pousserait
+  // à doubler l'automate, donc à rappeler une patiente déjà appelée quelques minutes plus
+  // tôt — le délai de 45 minutes du cron ne protège pas un lancement manuel.
+  if (r.date_echeance >= auj) return false;
+  if (estSortie(r)) return false;                                  // ordonnance reçue
+  if ((r.nb_tentatives ?? 0) > 0 || r.dernier_appel) return false; // jamais appelée
+  // Un statut posé à la main (« Marquer répondeur ») compte comme un traitement, même sans
+  // appel enregistré : `quickOutcome` permet ce cas depuis le tableau.
+  if (r.statut !== 'À appeler' && r.statut !== 'Non répondu') return false;
+  // La règle du contact écrit tient même sans appel : le bouton ✈ peut avoir servi cette
+  // patiente par SMS et par mail sans jamais composer son numéro.
+  if (r.sms_statut === 'livre') return false;
+  if (r.email_statut === 'livre' || r.email_statut === 'ouvert' || r.email_statut === 'clique') return false;
+  return true;
+}
+
+export interface EcheanceARattraper {
+  /** L'échéance, telle qu'en base (`date_echeance`, ISO). */
+  date: string;
+  /** Son ancienneté en jours parisiens — 1 = hier. */
+  jours: number;
+  /** Tout ce que porte l'échéance, sortis du parcours compris. */
+  total: number;
+  /** Ce qu'un rattrapage appellerait RÉELLEMENT. C'est le seul chiffre actionnable. */
+  aRattraper: number;
+}
+
+/**
+ * Les échéances passées qui portent encore des dossiers jamais appelés, la plus récente
+ * d'abord.
+ *
+ * ⚠️ Se calcule sur TOUTES les relances, jamais sur le périmètre affiché. Une échéance
+ * sautée est par nature hors du cadrage courant (le sélecteur de journée montre
+ * aujourd'hui) : la chercher dans `scope` la rendrait invisible exactement quand elle
+ * compte.
+ */
+export function echeancesARattraper(
+  relances: Relance[],
+  auj: string = aujourdhuiIso(),
+): EcheanceARattraper[] {
+  const par = new Map<string, EcheanceARattraper>();
+  for (const r of relances) {
+    const d = r.date_echeance;
+    if (!d || d >= auj) continue;
+    const e = par.get(d) ?? { date: d, jours: ecartJours(d, auj), total: 0, aRattraper: 0 };
+    e.total += 1;
+    if (aRattraper(r, auj)) e.aRattraper += 1;
+    par.set(d, e);
+  }
+  return [...par.values()]
+    .filter(e => e.aRattraper > 0)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
+/**
  * ── CES COMPTEURS ONT ÉTÉ CONFRONTÉS À LA BASE ────────────────────────────────
  * Mesuré le 2026-09-09, une étape = UN JOUR précis, écart compté sur `date_echeance` :
  *
