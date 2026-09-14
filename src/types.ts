@@ -186,8 +186,13 @@ export interface Facturation {
   /**
    * Suivi d'envoi du SMS. `null` = aucun envoi tenté — ou PANNE SILENCIEUSE d'envoi, le
    * nœud Brevo étant en `continueRegularOutput` (l'exécution s'affiche alors en « succès »).
+   *
+   * `non_concerne` est posé à la main, comme sur le canal mail : la ligne est exclue
+   * définitivement de l'envoi sans que rien ne parte. Depuis le 2026-09-14, il sert à
+   * écarter une patiente dont ORTHOP enregistre déjà l'ordonnance — la prévenir de la fin
+   * de ses droits n'aurait aucun sens, et c'est ce qui a été signalé par le client.
    */
-  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | null;
+  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | 'non_concerne' | null;
   sms_le?: string | null;
   sms_message_id?: string | null;
   /**

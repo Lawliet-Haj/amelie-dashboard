@@ -267,6 +267,10 @@ function SmsChip({ f }: { f: Facturation }) {
     case 'envoye':      return <Chip texte="SMS envoyé"    ton="encours" />;
     case 'echec':
     case 'echec_envoi': return <Chip texte="SMS non livré" ton="echec" />;
+    // Ligne volontairement exclue du canal SMS : rien n'est dû, rien ne partira.
+    // ⚠️ Sans ce cas, ces lignes retomberaient sur « À envoyer » et donneraient
+    // l'impression d'un retard d'envoi qui n'existe pas — même piège que sur le mail.
+    case 'non_concerne': return <Chip texte="Hors périmètre" ton="neutre" />;
     default:            return <Chip texte="À envoyer"     ton="attente" />;
   }
 }
@@ -736,6 +740,7 @@ const VUES_ENVOI: VueEnvoi[] = [
   { id: 'sms_envoye',  libelle: 'Envoyés',    canal: 'sms', teste: f => f.sms_statut === 'envoye' },
   { id: 'sms_livre',   libelle: 'Livrés',     canal: 'sms', teste: f => f.sms_statut === 'livre' },
   { id: 'sms_echec',   libelle: 'Non livrés', canal: 'sms', alerte: true, teste: f => ECHECS_ENVOI.includes(f.sms_statut ?? '') },
+  { id: 'sms_hors',    libelle: 'Hors périmètre', canal: 'sms', teste: f => f.sms_statut === 'non_concerne' },
   { id: 'sms_fixe',    libelle: 'Fixes',      canal: 'sms', teste: f => isFixe(f.telephone) },
 
   { id: 'mail_attente', libelle: 'À envoyer',   canal: 'mail', teste: f => !f.email_statut },
