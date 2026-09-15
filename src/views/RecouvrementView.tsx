@@ -5,6 +5,9 @@ import { ResultatsRecouvrement } from './ResultatsRecouvrement';
 import {
   railParCode, railDeRelance, railAtteint, ecritsDeRelance, lignesDuRail, etapeSuivante,
   ecartEcheance, RAILS_RELANCES, aRattraper, echeancesARattraper, type PorteeRail,
+  // La couverture ORTHOP : une seule définition, ici, partagée par l'écran et par le miroir
+  // des crons. Voir `raisonDeNePasSolliciter` pour ce qui bloque et ce qui ne fait qu'alerter.
+  couverteAujourdhui, raisonDeNePasSolliciter,
 } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
@@ -203,10 +206,10 @@ function aucunContact(r: Relance): boolean {
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
+type VueFiltre = 'couverte' | 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
-  { id: 'a_traiter',     label: 'À traiter',     match: aucunContact,                      title: 'Jamais appelées, aucun SMS livré, aucun mail reçu — rien ne leur est parvenu' },
+  { id: 'a_traiter',     label: 'À traiter',     match: r => !raisonDeNePasSolliciter(r) && aucunContact(r),                      title: 'Jamais appelées, aucun SMS livré, aucun mail reçu — rien ne leur est parvenu' },
   { id: 'a_appeler',     label: 'À appeler',     match: r => r.statut === 'À appeler',     title: 'Jamais encore appelées' },
   { id: 'messagerie',    label: 'Messagerie',    match: r => r.statut === 'Répondeur',     title: 'Message vocal laissé — le SMS est le seul vrai point de contact' },
   { id: 'raccroche',     label: 'Raccroché',     match: r => r.statut === 'Raccroché',     title: 'A décroché puis coupé sans écouter — SMS et mail envoyés, à rappeler si besoin' },
@@ -215,6 +218,10 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
   { id: 'deja_envoyee',  label: 'Déjà envoyée',  match: r => !!r.ordonnance_deja_envoyee, alerte: true, title: 'La patiente affirme avoir déjà transmis son ordonnance — à vérifier' },
   { id: 'mail_clique',   label: 'Mail cliqué',   match: r => r.email_statut === 'clique',  title: 'A cliqué un lien du mail — le signal d’engagement le plus fiable' },
   { id: 'vocal_manquant', label: 'Vocal manquant', match: r => r.vocal_statut === 'non_depose', alerte: true, title: 'Messagerie atteinte mais aucun message vocal laissé — seuls le SMS et le mail sont partis' },
+  // ⚠️ Pas de pastille rouge : ce n'est PAS une anomalie à traiter, c'est un groupe qu'on
+  // laisse tranquille. Elle existe pour qu'on puisse vérifier ce qui a été écarté, et pour
+  // que l'écart entre « Tout » et les autres comptes reste explicable.
+  { id: 'couverte',      label: 'Couverte',      match: r => !!raisonDeNePasSolliciter(r),  title: "Ordonnance déjà renouvelée ou encore en cours — plus rien à demander, les boutons sont fermés" },
   { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
 ];
 
@@ -1133,6 +1140,11 @@ function CampagnesView({ batches, relances, token, onRelanceUpdate, onRelanceDel
                             <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, fontFamily: 'Lexend,sans-serif', background: STATUT_CONFIG[r.statut]?.bg || '#f3f4f6', color: STATUT_CONFIG[r.statut]?.color || '#6b7280' }}>
                               {r.statut}
                             </span>
+                            {raisonDeNePasSolliciter(r) && (
+                              <span title={raisonDeNePasSolliciter(r) || ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', whiteSpace: 'nowrap' }}>
+                                🛡 {couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
+                              </span>
+                            )}
                             {r.sms_echec && (
                               <span title="SMS non livré — relance manuelle requise" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', whiteSpace: 'nowrap' }}>
                                 ⚠ SMS non livré
@@ -1182,7 +1194,7 @@ function CampagnesView({ batches, relances, token, onRelanceUpdate, onRelanceDel
                         {/* Call + Edit + Delete */}
                         <td style={{ padding: '8px 8px', whiteSpace: 'nowrap' }}>
                           <div style={{ display: 'flex', gap: 4 }}>
-                            <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.3)', whiteSpace: 'nowrap' }}>
+                            <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || !!raisonDeNePasSolliciter(r) || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 10px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.3)', whiteSpace: 'nowrap' }}>
                               {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
                               {callingId === r.id ? '…' : 'Appeler'}
                             </button>
@@ -1566,7 +1578,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                           onMouseLeave={e => { e.currentTarget.style.background = isSelected ? '#eff6ff' : 'transparent'; }}>
                           <td style={{ padding: '8px 10px', width: 32 }}>
                             <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(r.id)}
-                              disabled={!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'}
+                              disabled={!r.telephone || !!raisonDeNePasSolliciter(r) || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'}
                               style={{ cursor: 'pointer', accentColor: '#6366f1' }} />
                           </td>
                           <td style={{ padding: '8px 6px', width: 36 }}>
@@ -1597,6 +1609,11 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                               <span style={{ display: 'inline-block', padding: '3px 9px', borderRadius: 20, fontSize: 11.5, fontWeight: 700, fontFamily: 'Lexend,sans-serif', background: STATUT_CONFIG[r.statut]?.bg || '#f3f4f6', color: STATUT_CONFIG[r.statut]?.color || '#6b7280' }}>
                                 {r.statut}
                               </span>
+                              {raisonDeNePasSolliciter(r) && (
+                                <span title={raisonDeNePasSolliciter(r) || ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', whiteSpace: 'nowrap' }}>
+                                  🛡 {couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
+                                </span>
+                              )}
                               {/* Le badge SMS et le badge « fixe » vivent désormais dans la colonne SMS. */}
                               {r.ordonnance_deja_envoyee && (
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
@@ -1661,7 +1678,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                           </td>
                           <td style={{ padding: '8px 6px', whiteSpace: 'nowrap' }}>
                             <div style={{ display: 'flex', gap: 4 }}>
-                              <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 11px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.35)', whiteSpace: 'nowrap' }}>
+                              <button onClick={() => handleCall(r)} disabled={!r.telephone || callingId === r.id || !!raisonDeNePasSolliciter(r) || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '5px 11px', background: callingId === r.id ? '#fffbeb' : '#4338ca', color: callingId === r.id ? '#b45309' : 'white', border: callingId === r.id ? '1px solid #fde68a' : 'none', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer', opacity: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert') ? 0.3 : 1, transition: 'all .15s', boxShadow: (!r.telephone || r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || callingId === r.id) ? 'none' : '0 2px 6px rgba(67,56,202,.35)', whiteSpace: 'nowrap' }}>
                                 {callingId === r.id ? <RefreshCw size={11} style={{ animation: 'spin .8s linear infinite' }} /> : <Phone size={11} />}
                                 {callingId === r.id ? '…' : 'Appeler'}
                               </button>
@@ -1676,7 +1693,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                                 return (
                               <button
                                 onClick={() => handleSend(r)}
-                                disabled={sendingId === r.id || rien}
+                                disabled={sendingId === r.id || rien || !!raisonDeNePasSolliciter(r)}
                                 title={rien
                                   ? (r.email && !ec.mail
                                       ? `Aucun écrit possible : le mail est retiré du parcours à l’étape ${ec.rail?.libelle ?? 'atteinte'}, et ce numéro ne reçoit pas de SMS.`

@@ -368,6 +368,52 @@ export function estSortie(r: Relance): boolean {
 }
 
 /**
+ * ── LA SUSPENSION : UNE ORDONNANCE COURT ENCORE ───────────────────────────────
+ * `fin_application` est la fin de la période couverte par l'ordonnance en cours. Tant
+ * qu'elle est dans le futur, il n'y a RIEN à demander à la patiente.
+ *
+ * ⚠️ Ce n'est PAS `estSortie()` : la couverture EXPIRE, et la ligne redevient alors
+ * relançable toute seule. Confondre les deux ferait disparaître définitivement des
+ * dossiers qui doivent revenir.
+ *
+ * ⚠️ OUVERT PAR DÉFAUT — `null` ou date illisible ⇒ on relance. Une colonne vide ne peut
+ * pas faire taire la campagne. Miroir exact du SQL des crons :
+ * `fin_application IS NULL OR fin_application <= CURRENT_DATE`.
+ */
+export function couverteAujourdhui(r: Relance, auj: string = aujourdhuiIso()): boolean {
+  const fin = String(r.fin_application || '').slice(0, 10);
+  if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(fin)) return false;
+  return fin > auj;
+}
+
+/**
+ * ── LA SEULE QUESTION QUI COMPTE AVANT DE SOLLICITER QUELQU'UN ────────────────
+ * Rend la raison de NE PAS la solliciter, ou `null` si rien ne s'y oppose.
+ *
+ * ⚠️⚠️ DEUX NATURES DE SIGNAL, ET ELLES NE SE TRAITENT PAS PAREIL.
+ *
+ *   PREUVES (elles viennent d'ORTHOP)                     → bloquent, ici et au serveur
+ *     resolu_le        la prescription n'est plus réclamée
+ *     fin_application  une ordonnance couvre encore la période
+ *
+ *   DÉCLARATIF (un modèle qui interprète un transcript)    → signalé, jamais bloquant
+ *     ordonnance_deja_envoyee   la maman l'a DIT au téléphone
+ *
+ * Le déclaratif est COLLANT : seul le bouton « Vérifié » le lève. Un faux positif ferait
+ * taire le dossier jusqu'à ce que quelqu'un s'en aperçoive — et rappeler pour vérifier est
+ * justement l'action utile. Il n'entre donc pas ici ; il garde sa propre pastille.
+ *
+ * ⚠️ MIROIR de `PG Cibles Appels`, `PG Cibles J7`, du `Build Pre-Update SQL` des deux
+ * boutons d'appel et de l'`Auth` de l'envoi manuel. Si l'un change et pas les autres,
+ * l'écran annonce un travail que le serveur refuse — le défaut que ce projet combat.
+ */
+export function raisonDeNePasSolliciter(r: Relance, auj: string = aujourdhuiIso()): string | null {
+  if (estSortie(r)) return 'Ordonnance déjà renouvelée — ORTHOP ne la réclame plus';
+  if (couverteAujourdhui(r, auj)) return 'Ordonnance en cours jusqu au ' + String(r.fin_application).slice(0, 10);
+  return null;
+}
+
+/**
  * Cette ligne PEUT-elle être jugée par ORTHOP ?
  *
  * ⚠️ Les 153 lignes de la cohorte Excel du 25/08 n'ont aucun numéro de prescription :

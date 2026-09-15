@@ -127,6 +127,19 @@ export interface Relance {
   // mail cliqué ne prouve rien. C'est la SEULE condition de sortie absolue ; les autres
   // règles d'arrêt (statut, contact écrit) sont internes à un rail.
   resolu_le?: string | null;
+  // ── LA COUVERTURE EN COURS ────────────────────────────────────────────────────
+  // `EndApplicationDate` du bloc <Prescription> de CETTE prescription : la date jusqu'à
+  // laquelle une ordonnance couvre la période. Tant qu'elle est dans le futur, il n'y a
+  // RIEN à demander à la patiente — la relancer est l'erreur signalée par le client le
+  // 2026-09-14 (« des SMS alors que l'ordonnance était à jour »).
+  //
+  // ⚠️ OUVERTE PAR DÉFAUT : `null` laisse relancer. Une colonne non renseignée ne doit pas
+  // pouvoir faire taire la campagne — le silence total serait pire que quelques appels de
+  // trop. C'est l'inverse du choix fait pour l'interrupteur de pause, et c'est délibéré.
+  //
+  // ⚠️ À la différence de `resolu_le`, ce n'est PAS une sortie du parcours : c'est une
+  // SUSPENSION. Quand la date est passée, la ligne redevient relançable d'elle-même.
+  fin_application?: string | null;
   // ⚠️ Une ligne SANS numéro de prescription ne pourra JAMAIS être déclarée résolue. Les
   // 153 lignes de la cohorte Excel du 25/08 sont dans ce cas, et elles sont toutes déjà
   // jointes par écrit : ce ne sont pas des dossiers en retard, ce sont des dossiers sans
