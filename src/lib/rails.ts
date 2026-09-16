@@ -141,7 +141,10 @@ export const RAILS: Rail[] = [
       + 'et le mail selon l\u2019issue de l\u2019appel.',
     porteur: 'Amélie Sortant \u2014 Recouvrement',
     actions: [
-      { canal: 'appel', libelle: 'Appel (1) par l\u2019agent IA', detail: 'Cron 12h30 \u2192 13h55, dix appels par passage \u2014 la cohorte DU JOUR uniquement',           etat: 'actif' },
+      // \u26a0\ufe0f CINQ et non dix : `appels_par_passage_j1` vaut 5 et PRIME sur le g\u00e9n\u00e9rique
+      // `appels_par_passage` (10), qui n'est qu'un repli. Et c'est une SIMULTAN\u00c9IT\u00c9, pas un
+      // quota : le LIMIT vaut \u00ab 5 \u2212 appels en cours \u00bb, et les passages sont \u00e0 la MINUTE.
+      { canal: 'appel', libelle: 'Appel (1) par l\u2019agent IA', detail: 'Cron 12h30 \u2192 13h55, \u00e0 la minute, CINQ appels simultan\u00e9s \u2014 la cohorte DU JOUR uniquement', etat: 'actif' },
       { canal: 'sms',   libelle: 'SMS (1) après l\u2019appel',    detail: 'Envoyé par W3 selon l\u2019issue \u2014 jamais aux fixes', etat: 'actif' },
       { canal: 'mail',  libelle: 'Email (3) via Brevo',            detail: 'Modèle 353 \u2014 part après CHAQUE appel, fixes inclus',   etat: 'actif' },
     ],
@@ -352,7 +355,20 @@ export function lignesDuRail(
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) return false;
     if (portee === 'toutes') return true;
-    if (portee === 'jour') return j === ecartEcheance(rail);
+    if (portee === 'jour') {
+      // ⚠️⚠️ RATTRAPAGE DU 2026-09-16 — S'EFFACE TOUT SEUL LE LENDEMAIN.
+      // La pause a bloqué les appels du 14 au 16/09 : pour cette seule journée, les deux
+      // étapes en service couvrent TROIS jours d'échéance au lieu d'un — ici comme dans
+      // `PG Cibles Appels` et `PG Cibles J7`. L'écran et les crons doivent compter pareil.
+      //
+      // ⚠️ La date est écrite EN DUR, et c'est voulu : un élargissement qu'il faudrait
+      // penser à retirer finirait par annuler la décision du 2026-09-09 (« les appels ne
+      // visent que la cohorte du jour ») par simple oubli, sans que personne le voie.
+      // Demain cette condition est fausse et la ligne suivante reprend seule.
+      const RATTRAPAGE_2026_09_16 = auj === '2026-09-16' && (rail.code === 'R3' || rail.code === 'R4');
+      if (RATTRAPAGE_2026_09_16) return j >= ecartEcheance(rail) && j <= ecartEcheance(rail) + 2;
+      return j === ecartEcheance(rail);
+    }
     // 'segment' : de cette étape jusqu'à la veille de la suivante.
     return j >= ecartEcheance(rail)
       && (suivante == null || j < ecartEcheance(suivante));
