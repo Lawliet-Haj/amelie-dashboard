@@ -158,7 +158,7 @@ export const RAILS: Rail[] = [
       + 'reçu un après son appel du R3.',
     porteur: 'Amélie Sortant J+7 — agent IA dédié',
     actions: [
-      { canal: 'appel', libelle: 'Appel (2) par l’agent IA dédié', detail: 'Cron 15h30 → 16h55, dix appels par passage — créneau distinct de R3', etat: 'actif' },
+      { canal: 'appel', libelle: 'Appel (2) par l’agent IA dédié', detail: 'Cron 12h30 → 13h59, dix appels par passage — MÊME créneau que R3 depuis le 2026-09-11', etat: 'actif' },
       { canal: 'sms',   libelle: 'SMS (2) après l’appel', detail: 'Envoyé par le post-call J+7 selon l’issue — jamais aux fixes', etat: 'actif' },
       { canal: 'mail',  libelle: 'Email (4) via Brevo', detail: 'Retiré du parcours — décision client du 2026-09-09', etat: 'retire' },
     ],

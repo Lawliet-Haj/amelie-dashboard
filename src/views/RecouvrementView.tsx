@@ -7,7 +7,7 @@ import {
   ecartEcheance, RAILS_RELANCES, aRattraper, echeancesARattraper, type PorteeRail,
   // La couverture ORTHOP : une seule définition, ici, partagée par l'écran et par le miroir
   // des crons. Voir `raisonDeNePasSolliciter` pour ce qui bloque et ce qui ne fait qu'alerter.
-  couverteAujourdhui, raisonDeNePasSolliciter,
+  couverteAujourdhui, raisonDeNePasSolliciter, type Rail,
 } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
@@ -271,6 +271,27 @@ export interface OrthopResult {
   eligibles?: number;
   inseres?: number;
   deja_presents?: number;
+  // ── CE QUE L'EXTRACTION A JUGÉ ────────────────────────────────────────────────
+  // ⚠️ Ces champs étaient renvoyés par le workflow depuis le 2026-09-11 sans figurer ici :
+  // l'écran ne pouvait donc pas les montrer. Ce sont pourtant eux qui disent ce que la
+  // mise à jour d'une étape a RÉELLEMENT appris.
+  //   resolues   — ORTHOP ne réclame plus ces prescriptions : l'ordonnance est arrivée
+  //   reouvertes — il les réclame à nouveau : une résolution était fausse, elle est levée
+  //   fins_majs  — couvertures rafraîchies (`fin_application`)
+  //   erreurs    — dossiers illisibles. ⚠️ Non nul ⇒ `jugement_applique` est FAUX et aucune
+  //                résolution n'a été posée : un dossier qu'on n'a pas pu lire n'est PAS
+  //                une preuve de renouvellement.
+  resolues?: number;
+  reouvertes?: number;
+  fins_majs?: number;
+  erreurs?: number;
+  jugement_applique?: boolean;
+  // ⚠️ Vrai quand la date visée est ANTÉRIEURE au début de campagne (25/08) : la mise à
+  // jour tourne (résolutions, couvertures) mais AUCUNE ligne n est importée — sans quoi on
+  // ferait entrer des patientes jamais contactées directement à « mise en demeure ».
+  // Sans ce drapeau, « 0 ajoutée » se lirait comme « rien de nouveau ».
+  insertion_bloquee?: boolean;
+  ecartes_ordonnance_recue?: number;
   erreur?: string;
 }
 /**
@@ -519,11 +540,53 @@ function OrthopModal({ token, onClose, onSuccess }: { token: string; onClose: ()
   const [loading, setLoading] = useState(false);
   const [res, setRes] = useState<OrthopResult | null>(null);
 
+  // Progression de la mise a jour de TOUTES les etapes, et son bilan etape par etape.
+  const [enCours, setEnCours] = useState<string | null>(null);
+  const [bilan, setBilan] = useState<{ libelle: string; r: OrthopResult }[] | null>(null);
+
+  /**
+   * ⚠️⚠️ L'ECART VIENT DE ecartEcheance(), JAMAIS DE rail.jour.
+   * Un rail libelle J+N tire sur date_echeance + (N − 1), parce que date_echeance est la
+   * date « applicable du » = fin de location + 1. Utiliser rail.jour nu ferait interroger
+   * des dates decalees d'un jour — l'erreur exacte commise sur la sonde ORTHOP le 09/09.
+   */
+  const dateDuRail = (rail: Rail) => decalerJours(aujourdhui, -ecartEcheance(rail));
+
   async function lancer() {
-    setLoading(true); setRes(null);
+    setLoading(true); setRes(null); setBilan(null);
     const r = await extractOrthop(token, date);
     setLoading(false); setRes(r);
     if (!r.erreur) onSuccess(r.inseres ?? 0);
+  }
+
+  /** Une seule etape : on interroge ORTHOP sur SA cohorte, et rien d'autre. */
+  async function lancerRail(rail: Rail) {
+    const d = dateDuRail(rail);
+    setDate(d); setLoading(true); setRes(null); setBilan(null);
+    const r = await extractOrthop(token, d);
+    setLoading(false); setRes(r);
+    if (!r.erreur) onSuccess(r.inseres ?? 0);
+  }
+
+  /**
+   * Toutes les etapes, l'une APRES l'autre.
+   *
+   * ⚠️⚠️ SEQUENTIEL, ET CE N'EST PAS UN DETAIL. Un Promise.all lancerait sept extractions
+   * en parallele, chacune enchainant une centaine d'appels SOAP : c'est exactement ce qui a
+   * sature ORTHOP le 2026-09-11 et produit 35 fausses resolutions sur 39. Le await dans la
+   * boucle espace les FINS, la ou le batching de n8n n'espacait que les departs.
+   */
+  async function lancerToutes() {
+    setLoading(true); setRes(null); setBilan([]);
+    const acc: { libelle: string; r: OrthopResult }[] = [];
+    for (const rail of RAILS_RELANCES) {
+      setEnCours(rail.libelle);
+      const r = await extractOrthop(token, dateDuRail(rail));
+      acc.push({ libelle: rail.libelle, r });
+      setBilan([...acc]);
+    }
+    setEnCours(null); setLoading(false);
+    onSuccess(acc.reduce((n, x) => n + (x.r.inseres ?? 0), 0));
   }
 
   const ligne = (label: string, valeur: React.ReactNode, fort = false) => (
@@ -545,8 +608,62 @@ function OrthopModal({ token, onClose, onSuccess }: { token: string; onClose: ()
           Récupère directement la liste des renouvellements, sans export Excel. Les patientes déjà présentes ne sont jamais ajoutées deux fois.
         </p>
 
+        {/* ⚠️⚠️ METTRE A JOUR UNE ETAPE = DEMANDER A ORTHOP QUI A ENVOYE DEPUIS.
+            L'extraction pose `resolu_le` sur les prescriptions qu'ORTHOP ne reclame plus
+            et rafraichit la couverture sur les autres : les deux conditions qui retirent
+            une patiente de la selection d'appels. Elle est idempotente — la relancer
+            n'ajoute aucun doublon. */}
         <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', display: 'block', marginBottom: 6 }}>
-          Ordonnances applicables du
+          Mettre à jour une étape
+        </label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {RAILS_RELANCES.map(rail => (
+            <button key={rail.code} onClick={() => lancerRail(rail)} disabled={loading}
+              title={"Ré-interroger ORTHOP sur la cohorte du " + formatDate(dateDuRail(rail))
+                + " — met à jour qui a envoyé son ordonnance depuis" + (rail.actif ? "" : " (étape pas encore en service)")}
+              style={{
+                display: 'inline-flex', alignItems: 'baseline', gap: 5, padding: '6px 11px',
+                borderRadius: 8, fontSize: 12, cursor: loading ? 'default' : 'pointer',
+                fontFamily: 'Lexend,sans-serif', background: 'white',
+                border: "1px solid " + (rail.actif ? '#c7d2fe' : 'var(--border)'),
+                color: rail.actif ? '#4338ca' : 'var(--muted)', opacity: loading ? .5 : 1,
+              }}>
+              <strong>{rail.libelle}</strong>
+              <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>{formatDate(dateDuRail(rail))}</span>
+            </button>
+          ))}
+          {/* ⚠️ Les étapes partent UNE PAR UNE (voir `lancerToutes`) : sept extractions
+              simultanées satureraient ORTHOP. Comptez deux à trois minutes. */}
+          <button onClick={lancerToutes} disabled={loading}
+            title="Ré-interroger ORTHOP sur les sept étapes du recouvrement, l'une après l'autre — comptez deux à trois minutes"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 11px',
+              borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: loading ? 'default' : 'pointer',
+              fontFamily: 'Lexend,sans-serif', background: '#4338ca', color: 'white',
+              border: 'none', opacity: loading ? .5 : 1,
+            }}>
+            <RefreshCw size={12} /> Toutes les étapes
+          </button>
+        </div>
+
+        {bilan && bilan.length > 0 && (
+          <div style={{ marginBottom: 16, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+            {bilan.map(b => (
+              <div key={b.libelle} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '6px 11px', fontSize: 12, borderBottom: '1px solid #f1f5f9' }}>
+                <strong style={{ fontFamily: 'Lexend,sans-serif' }}>{b.libelle}</strong>
+                <span style={{ color: b.r.erreur ? '#b91c1c' : 'var(--muted)' }}>
+                  {b.r.erreur ? b.r.erreur
+                    : b.r.insertion_bloquee ? "mise à jour seule · " + (b.r.resolues ?? 0) + " ordonnance(s) reçue(s) · " + (b.r.fins_majs ?? 0) + " couverture(s)"
+                    : (b.r.inseres ?? 0) + " ajoutée(s) · " + (b.r.resolues ?? 0) + " ordonnance(s) reçue(s) · "
+                      + (b.r.fins_majs ?? 0) + " couverture(s) mise(s) à jour"}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <label style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', fontFamily: 'Lexend,sans-serif', display: 'block', marginBottom: 6 }}>
+          … ou une date précise (ordonnances applicables du)
         </label>
         <input type="date" value={date} onChange={e => setDate(e.target.value)} disabled={loading}
           style={{ width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--border)', fontSize: 13.5, color: 'var(--text)', boxSizing: 'border-box', outline: 'none', fontFamily: 'inherit' }} />
@@ -555,7 +672,7 @@ function OrthopModal({ token, onClose, onSuccess }: { token: string; onClose: ()
         {loading && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 16px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, marginTop: 18 }}>
             <RefreshCw size={16} style={{ color: '#1d4ed8', animation: 'spin .8s linear infinite', flexShrink: 0 }} />
-            <p style={{ fontSize: 12.5, color: '#1e40af', margin: 0 }}>Interrogation d'ORTHOP… comptez une dizaine de secondes.</p>
+            <p style={{ fontSize: 12.5, color: '#1e40af', margin: 0 }}>{enCours ? "Étape " + enCours + "… les étapes partent l'une après l'autre." : "Interrogation d'ORTHOP… comptez une dizaine de secondes."}</p>
           </div>
         )}
 
