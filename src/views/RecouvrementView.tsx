@@ -221,7 +221,7 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
   // ⚠️ Pas de pastille rouge : ce n'est PAS une anomalie à traiter, c'est un groupe qu'on
   // laisse tranquille. Elle existe pour qu'on puisse vérifier ce qui a été écarté, et pour
   // que l'écart entre « Tout » et les autres comptes reste explicable.
-  { id: 'couverte',      label: 'Couverte',      match: r => !!raisonDeNePasSolliciter(r),  title: "Ordonnance déjà renouvelée ou encore en cours — plus rien à demander, les boutons sont fermés" },
+  { id: 'couverte',      label: 'Déjà servies',  match: r => !!raisonDeNePasSolliciter(r),  title: "Ordonnance déjà renouvelée ou encore en cours — plus rien à demander, les boutons sont fermés" },
   { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
 ];
 
@@ -1313,6 +1313,10 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [editTarget, setEditTarget]         = useState<Relance | null>(null);
   const [filterStatut, setFilterStatut]     = useState('');
   const [vue, setVue]                       = useState<VueFiltre>('a_traiter');
+  // ⚠️ L'écran montre LE TRAVAIL, pas le stock : les dossiers déjà servis (ordonnance reçue
+  // ou couverture en cours) sortent de la liste par défaut. Ils restent EN BASE — c'est ce
+  // qui permet de recouper avec un export ORTHOP — et leur nombre reste affiché.
+  const [masquerServies, setMasquerServies] = useState(true);
   // Date observée par le bandeau d'activité — par défaut aujourd'hui (heure de Paris).
   const [jourFiltre, setJourFiltre]         = useState(() => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }));
   /**
@@ -1546,7 +1550,32 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         return jour ? jour === jourFiltre : jourFiltre === jourCourant;
       }));
 
-  const filtered = scope
+  /**
+   * ── LE TRAVAIL RÉEL ───────────────────────────────────────────────────────────
+   * Ce qu'on a encore le droit de solliciter. Les dossiers servis — ordonnance reçue, ou
+   * couverture ORTHOP en cours — n'ont plus rien à faire dans une liste de travail : ils
+   * la gonflent et font chercher longtemps ce qu'il reste à faire.
+   *
+   * ⚠️ Ils sont MASQUÉS, pas supprimés. La table les garde, et c'est ce qui a permis le
+   * 2026-09-15 de nommer les 26 écartées et de prouver que notre liste valait exactement
+   * l'export du client. Une ligne absente est indiscernable d'une ligne perdue.
+   *
+   * ⚠️ DEUX PASTILLES LÈVENT LE MASQUE, sinon leur libellé mentirait : « Déjà servies »
+   * n'afficherait rien du tout, et « Tout » ne montrerait pas tout.
+   *
+   * ⚠️ le compte des servies se calcule sur le périmètre COMPLET, masque levé ou non : c'est le
+   * nombre affiche, il ne doit pas dependre de l'etat du bouton.
+   */
+  // ⚠️ UNE SEULE definition du perimetre de travail, partagee par le tableau ET par les
+  // compteurs des pastilles. Les calculer separement les ferait diverger — une pastille
+  // annoncant 100 au-dessus d'un tableau de 74 est pire qu'une pastille absente.
+  const sansMasque = (id: VueFiltre) => id === 'couverte' || id === 'tout';
+  const scopeTravail = scope.filter(r => !raisonDeNePasSolliciter(r));
+  const nbServies = scope.length - scopeTravail.length;
+  const masqueActif = masquerServies && !sansMasque(vue);
+  const aTravailler = masqueActif ? scopeTravail : scope;
+
+  const filtered = aTravailler
     // La barre de filtres rapides pilote la liste ; le menu « Statut » affine en plus (ET).
     .filter(vueMatch)
     .filter(r => !filterStatut || r.statut === filterStatut)
@@ -2406,16 +2435,37 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
               <span style={{ fontSize: 11.5, color: '#64748b', textDecoration: 'underline', textDecorationColor: '#e2e8f0', textUnderlineOffset: 3 }}>mails cliqués</span>
             </button>
             <div style={{ flex: 1, minWidth: 12 }} />
-            <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap' }}>
-              {scope.length} relance{scope.length !== 1 ? 's' : ''}{jourFiltre ? ' ce jour' : ''}
-              {!jourFiltre && ` · ${tauxRappel}% résolues`}
+            <span style={{ fontSize: 11.5, color: '#94a3b8', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'baseline', gap: 7 }}>
+              <span>
+                {aTravailler.length} relance{aTravailler.length !== 1 ? 's' : ''}{jourFiltre ? ' ce jour' : ''}
+                {!jourFiltre && ` · ${tauxRappel}% résolues`}
+              </span>
+              {/* ⚠️ Le nombre masqué est TOUJOURS écrit, et il s'ouvre d'un clic. Cacher en
+                  silence rendrait un écran court indiscernable d'un écran amputé. */}
+              {nbServies > 0 && vue !== 'couverte' && vue !== 'tout' && (
+                <button
+                  onClick={() => setMasquerServies(m => !m)}
+                  title={masqueActif
+                    ? "Ordonnance déjà renouvelée ou encore en cours : il n'y a rien à leur demander. Cliquez pour les afficher quand même."
+                    : 'Masquer à nouveau les dossiers déjà servis'}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer',
+                    color: '#64748b', textDecoration: 'underline', textDecorationColor: '#cbd5e1', textUnderlineOffset: 3,
+                  }}
+                >
+                  {masqueActif ? '+' : '−'} {nbServies} servie{nbServies !== 1 ? 's' : ''}
+                  {masqueActif ? ' masquée' : ' affichée'}{nbServies !== 1 ? 's' : ''}
+                </button>
+              )}
             </span>
           </div>
 
           {/* ── Filtres rapides : remplacent les cartes KPI et l'onglet « Suivi » ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
             {VUES.map(v => {
-              const n = scope.filter(v.match).length;   // comptes sur la journée affichée
+              // Chaque pastille compte sur le perimetre que SON clic affichera.
+              const n = (masquerServies && !sansMasque(v.id) ? scopeTravail : scope)
+                .filter(v.match).length;
               const active = vue === v.id;
               const alerte = !!v.alerte && n > 0;
               return (
