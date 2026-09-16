@@ -143,6 +143,7 @@ export function ParcoursRails({
           <Agregat n={global.surUneEtape} libelle="sur une étape aujourd’hui" ton="encours" />
           <Agregat n={global.aTraiter} libelle="sans aucun contact"
                    ton={global.aTraiter > 0 ? 'echec' : undefined} />
+          <Agregat n={global.couvertes} libelle="ordonnance en cours" ton="ok2" />
           <Agregat n={global.sorties} libelle="ordonnances reçues" ton="ok" />
         </div>
       </div>
@@ -167,7 +168,8 @@ export function ParcoursRails({
                   marginBottom: 'var(--sp-5)' }}>
         <strong>{global.actives}</strong> dossiers en cours ={' '}
         <strong>{global.surUneEtape}</strong> sur une étape aujourd’hui{' + '}
-        <strong>{global.entreDeuxEtapes}</strong> entre deux étapes.
+        <strong>{global.entreDeuxEtapes}</strong> entre deux étapes{' + '}
+        <strong>{global.couvertes}</strong> couvertes par une ordonnance en cours.
         {global.entreDeuxEtapes > 0 && (
           <> Ces derniers n’ont aucun rendez-vous aujourd’hui : ils attendent leur prochaine
             étape. Ouvrez une étape et élargissez la portée pour les retrouver.</>
@@ -387,6 +389,8 @@ function PanneauRail({
       <Titre texte="Où en est ce rail" />
 
       <Ligne libelle="Dans le parcours" n={c?.actifs ?? 0} />
+      <Ligne libelle="Ordonnance en cours" n={c?.couvertes ?? 0} ton="ok2"
+             aide="Une ordonnance couvre encore la période : rien à leur demander. Elles reviennent d’elles-mêmes à son expiration." />
       <Ligne libelle="Ordonnance reçue" n={c?.sortis ?? 0} ton="ok"
              aide="Sortis définitivement : ORTHOP ne réclame plus la prescription." />
       <Ligne libelle="Joints par écrit dans ce rail" n={c?.jointsEcrit ?? 0} ton="ok2"

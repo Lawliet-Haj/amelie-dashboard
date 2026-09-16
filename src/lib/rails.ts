@@ -245,6 +245,37 @@ export function ecartEcheance(rail: Rail): number {
 }
 
 /**
+ * Cet écart tombe-t-il sur CETTE étape aujourd'hui ?
+ *
+ * ⚠️⚠️ SEUL ENDROIT QUI LE SAIT — ne pas en refaire une copie. `railDeRelance()` et
+ * `lignesDuRail()` répondaient chacun de leur côté, et la fenêtre de rattrapage du
+ * 2026-09-16 n'a été posée que dans le second. Conséquences mesurées le jour même :
+ *   • l'écran Parcours annonçait **75** dossiers au J+1 quand sa propre liste en
+ *     montrait **180**, et son bouton « Ouvrir la liste (75) » ouvrait les 180 ;
+ *   • `estRailJ7()` (RecouvrementView) en dérive le choix de l’AGENT : les échéances
+ *     du 08 et du 09/09 ne tombaient sur aucune étape, donc `null`, donc l'agent du
+ *     J+1 sur des dossiers du J+7.
+ */
+export function surLEtapeAujourdhui(
+  rail: Rail, j: number, auj: string = aujourdhuiIso(),
+): boolean {
+  // ⚠️⚠️ RATTRAPAGE DU 2026-09-16 — S’EFFACE TOUT SEUL LE LENDEMAIN.
+  // La pause a bloqué les appels du 14 au 16/09 : pour cette seule journée, les deux
+  // étapes en service couvrent TROIS jours d'échéance au lieu d'un — ici comme dans
+  // `PG Cibles Appels` et `PG Cibles J7`. L'écran et les crons doivent compter pareil.
+  //
+  // ⚠️ La date est écrite EN DUR, et c'est voulu : un élargissement qu'il faudrait
+  // penser à retirer finirait par annuler la décision du 2026-09-09 (« les appels ne
+  // visent que la cohorte du jour ») par simple oubli, sans que personne le voie.
+  // Demain cette condition est fausse et la ligne suivante reprend seule.
+  //
+  // ⚠️ Les fenêtres des deux étapes restent DISJOINTES (R3 : 0-2, R4 : 6-8), ce qui
+  // est la condition pour que `railDeRelance()` puisse rendre une réponse unique.
+  const RATTRAPAGE_2026_09_16 = auj === '2026-09-16' && (rail.code === 'R3' || rail.code === 'R4');
+  if (RATTRAPAGE_2026_09_16) return j >= ecartEcheance(rail) && j <= ecartEcheance(rail) + 2;
+  return j === ecartEcheance(rail);
+}
+/**
  * Sur quelle étape du parcours cette relance tombe-t-elle AUJOURD'HUI ?
  *
  * `null` dans trois cas, tous légitimes :
@@ -257,7 +288,7 @@ export function railDeRelance(r: Relance, auj: string = aujourdhuiIso()): Rail |
   if (!r.date_echeance) return null;
   const j = ecartJours(r.date_echeance, auj);
   if (!Number.isFinite(j) || j < 0) return null;
-  return RAILS_RELANCES.find(x => ecartEcheance(x) === j) ?? null;
+  return RAILS_RELANCES.find(x => surLEtapeAujourdhui(x, j, auj)) ?? null;
 }
 
 /**
@@ -355,20 +386,7 @@ export function lignesDuRail(
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) return false;
     if (portee === 'toutes') return true;
-    if (portee === 'jour') {
-      // ⚠️⚠️ RATTRAPAGE DU 2026-09-16 — S'EFFACE TOUT SEUL LE LENDEMAIN.
-      // La pause a bloqué les appels du 14 au 16/09 : pour cette seule journée, les deux
-      // étapes en service couvrent TROIS jours d'échéance au lieu d'un — ici comme dans
-      // `PG Cibles Appels` et `PG Cibles J7`. L'écran et les crons doivent compter pareil.
-      //
-      // ⚠️ La date est écrite EN DUR, et c'est voulu : un élargissement qu'il faudrait
-      // penser à retirer finirait par annuler la décision du 2026-09-09 (« les appels ne
-      // visent que la cohorte du jour ») par simple oubli, sans que personne le voie.
-      // Demain cette condition est fausse et la ligne suivante reprend seule.
-      const RATTRAPAGE_2026_09_16 = auj === '2026-09-16' && (rail.code === 'R3' || rail.code === 'R4');
-      if (RATTRAPAGE_2026_09_16) return j >= ecartEcheance(rail) && j <= ecartEcheance(rail) + 2;
-      return j === ecartEcheance(rail);
-    }
+    if (portee === 'jour') return surLEtapeAujourdhui(rail, j, auj);
     // 'segment' : de cette étape jusqu'à la veille de la suivante.
     return j >= ecartEcheance(rail)
       && (suivante == null || j < ecartEcheance(suivante));
@@ -621,7 +639,17 @@ export interface ComptesRail {
   dansLeRail: number;
   /** Sortis du parcours : ordonnance renouvelée, constatée dans ORTHOP. */
   sortis: number;
-  /** Encore dans le parcours (non résolus). */
+  /**
+   * SUSPENDUES : une ordonnance court encore, il n'y a rien à leur demander.
+   * ⚠️ Ce n'est pas une sortie : quand la couverture expire elles reviennent d'elles-mêmes.
+   */
+  couvertes: number;
+  /**
+   * Le travail RÉEL de cette étape : ni sorties, ni couvertes.
+   * ⚠️⚠️ C'est exactement `lignesDuRail(lignes, rail, 'jour', auj).length` — le chiffre
+   * de la tuile et celui de la liste qu'elle ouvre ne peuvent plus diverger.
+   * ⚠️ `dansLeRail = sortis + couvertes + actifs`.
+   */
   actifs: number;
   /** Parmi les actifs : déjà joints par écrit DEPUIS leur entrée dans ce rail. */
   jointsEcrit: number;
@@ -644,8 +672,10 @@ export interface ComptesGlobaux {
   actives: number;
   /** Sorties du parcours : ordonnance renouvelée, constatée dans ORTHOP. */
   sorties: number;
-  /** Sur une des neuf étapes aujourd'hui — le travail programmé du jour. */
+  /** Sur une des neuf étapes aujourd'hui — le travail programmé du jour, couvertes exclues. */
   surUneEtape: number;
+  /** Suspendues : une ordonnance court encore. Aucun rendez-vous tant qu’elle court. */
+  couvertes: number;
   /** Entre deux étapes : aucun rendez-vous aujourd'hui, elles attendent la suivante. */
   entreDeuxEtapes: number;
   /** Parmi celles sur une étape : rien ne leur est parvenu depuis leur entrée. */
@@ -661,18 +691,25 @@ export interface ComptesGlobaux {
  * d'avoir égaré 761 dossiers, et c'est exactement le genre de trou silencieux qu'on
  * cherche à ne plus produire. L'invariant à préserver :
  *
- *     surUneEtape + entreDeuxEtapes === actives
+ *     surUneEtape + entreDeuxEtapes + couvertes === actives
+ *
+ * ⚠️ `couvertes` est le TROISIÈME terme, ajouté le 2026-09-16. Une couverte n’est ni
+ * sur une étape (il n'y a rien à lui demander) ni entre deux (elle n'attend pas un
+ * rendez-vous, elle attend la fin de sa couverture). La ranger dans `entreDeuxEtapes`
+ * aurait fait boucler les totaux en racontant quelque chose de faux.
  */
 export function comptesGlobaux(
   lignes: Relance[], auj: string = aujourdhuiIso(),
 ): ComptesGlobaux {
-  let actives = 0, sorties = 0, surUneEtape = 0, entreDeuxEtapes = 0, aTraiter = 0;
+  let actives = 0, sorties = 0, surUneEtape = 0, entreDeuxEtapes = 0, aTraiter = 0, couvertes = 0;
   for (const r of lignes) {
     if (!r.date_echeance) continue;
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) continue;   // pas encore entrée dans le parcours
     if (estSortie(r)) { sorties++; continue; }
     actives++;
+    // ⚠️ Une couverte est comptée ACTIVE (elle reviendra) mais sur AUCUNE étape.
+    if (couverteAujourdhui(r, auj)) { couvertes++; continue; }
     const rail = railDeRelance(r, auj);
     if (rail) {
       surUneEtape++;
@@ -681,7 +718,7 @@ export function comptesGlobaux(
       entreDeuxEtapes++;
     }
   }
-  return { actives, sorties, surUneEtape, entreDeuxEtapes, aTraiter };
+  return { actives, sorties, surUneEtape, entreDeuxEtapes, aTraiter, couvertes };
 }
 
 export function comptesDuRail(
@@ -690,14 +727,21 @@ export function comptesDuRail(
   auj: string = aujourdhuiIso(),
 ): ComptesRail {
   const dedans = lignes.filter(r => railDeRelance(r, auj)?.code === rail.code);
-  const actifs = dedans.filter(r => !estSortie(r));
+  // ⚠️⚠️ TROIS PARTS DISJOINTES, dans cet ordre : une sortie l’emporte sur une couverture.
+  // Demande du client le 2026-09-16 : « ceux qui sont couverts ne doivent pas être dans
+  // les rails ». `lignesDuRail()` les écartait déjà ; ces compteurs, non — la tuile
+  // annonçait 75 au J+1 et sa liste en montrait 180.
+  const sortis   = dedans.filter(r => estSortie(r));
+  const couvertes = dedans.filter(r => !estSortie(r) && couverteAujourdhui(r, auj));
+  const actifs   = dedans.filter(r => !estSortie(r) && !couverteAujourdhui(r, auj));
   const jointsEcrit = actifs.filter(r => jointParEcritDansLeRail(r, rail, auj));
   const jointsVoix = actifs.filter(r => jointVoixDansLeRail(r, rail, auj));
 
   return {
     rail,
     dansLeRail: dedans.length,
-    sortis: dedans.length - actifs.length,
+    sortis: sortis.length,
+    couvertes: couvertes.length,
     actifs: actifs.length,
     jointsEcrit: jointsEcrit.length,
     jointsVoix: jointsVoix.length,
