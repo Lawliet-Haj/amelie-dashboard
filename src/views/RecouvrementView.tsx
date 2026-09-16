@@ -286,11 +286,6 @@ export interface OrthopResult {
   fins_majs?: number;
   erreurs?: number;
   jugement_applique?: boolean;
-  // ⚠️ Vrai quand la date visée est ANTÉRIEURE au début de campagne (25/08) : la mise à
-  // jour tourne (résolutions, couvertures) mais AUCUNE ligne n est importée — sans quoi on
-  // ferait entrer des patientes jamais contactées directement à « mise en demeure ».
-  // Sans ce drapeau, « 0 ajoutée » se lirait comme « rien de nouveau ».
-  insertion_bloquee?: boolean;
   ecartes_ordonnance_recue?: number;
   erreur?: string;
 }
@@ -653,7 +648,6 @@ function OrthopModal({ token, onClose, onSuccess }: { token: string; onClose: ()
                 <strong style={{ fontFamily: 'Lexend,sans-serif' }}>{b.libelle}</strong>
                 <span style={{ color: b.r.erreur ? '#b91c1c' : 'var(--muted)' }}>
                   {b.r.erreur ? b.r.erreur
-                    : b.r.insertion_bloquee ? "mise à jour seule · " + (b.r.resolues ?? 0) + " ordonnance(s) reçue(s) · " + (b.r.fins_majs ?? 0) + " couverture(s)"
                     : (b.r.inseres ?? 0) + " ajoutée(s) · " + (b.r.resolues ?? 0) + " ordonnance(s) reçue(s) · "
                       + (b.r.fins_majs ?? 0) + " couverture(s) mise(s) à jour"}
                 </span>
