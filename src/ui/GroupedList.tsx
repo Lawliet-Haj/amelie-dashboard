@@ -25,6 +25,15 @@ export type GroupeEntete = {
   marque?: string;
   /** Groupe sur lequel on travaille : bordure et fond accentués. */
   accent?: boolean;
+  /**
+   * Actions portées par l'en-tête, à droite. Rendues À CÔTÉ du bouton de dépliage, jamais
+   * dedans : imbriquer un bouton dans un bouton est invalide, et le moindre clic replierait
+   * le groupe.
+   *
+   * ⚠️ Elles restent visibles GROUPE REPLIÉ — c'est précisément l'intérêt : agir sur une
+   * échéance sans avoir à déplier cent lignes pour atteindre un bouton.
+   */
+  actions?: ReactNode;
   /** Teintes de l'accent, laissées à l'appelant (chaque palier a la sienne). */
   accentBord?: string;
   accentFond?: string;
@@ -62,15 +71,18 @@ export function GroupedList({
             background: 'var(--card)', border: `1px solid ${bord}`,
             borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-3)', overflow: 'hidden',
           }}>
+            <div style={{
+              display: 'flex', alignItems: 'center',
+              background: g.accent ? (g.accentFond ?? 'var(--blue-faint)') : '#f8fafc',
+              borderBottom: ouvert ? '1px solid var(--border)' : 'none',
+            }}>
             <button
               onClick={() => onToggle(g.cle)}
               aria-expanded={ouvert}
               style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
+                flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
                 padding: '11px var(--sp-4)', border: 'none', cursor: 'pointer', textAlign: 'left',
-                flexWrap: 'wrap', fontFamily: 'inherit',
-                background: g.accent ? (g.accentFond ?? 'var(--blue-faint)') : '#f8fafc',
-                borderBottom: ouvert ? '1px solid var(--border)' : 'none',
+                flexWrap: 'wrap', fontFamily: 'inherit', background: 'transparent',
               }}>
               {ouvert
                 ? <ChevronDown size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />
@@ -95,6 +107,14 @@ export function GroupedList({
                 </span>
               )}
             </button>
+
+            {g.actions && (
+              <span style={{
+                display: 'flex', alignItems: 'center', gap: 'var(--sp-2)',
+                padding: '0 var(--sp-4)', flexShrink: 0,
+              }}>{g.actions}</span>
+            )}
+            </div>
 
             {ouvert && rendu(g.cle)}
           </div>

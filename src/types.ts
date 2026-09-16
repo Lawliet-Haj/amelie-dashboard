@@ -204,8 +204,20 @@ export interface Facturation {
    * définitivement de l'envoi sans que rien ne parte. Depuis le 2026-09-14, il sert à
    * écarter une patiente dont ORTHOP enregistre déjà l'ordonnance — la prévenir de la fin
    * de ses droits n'aurait aucun sens, et c'est ce qui a été signalé par le client.
+   *
+   * `ordonnance_recue` (2026-09-16) est posé par l'EXTRACTION, pas à la main : ORTHOP ne
+   * réclame plus cette prescription pour cette date, donc l'ordonnance est arrivée depuis
+   * l'import et il n'y a plus rien à annoncer.
+   *
+   * ⚠️ DISTINCT de `non_concerne`, et il faut que ça le reste : l'un est une décision
+   * humaine sur une cohorte, l'autre un constat sur une patiente. Les confondre rendrait
+   * impossible de dire, trois jours plus tard, pourquoi une ligne n'est pas partie.
+   *
+   * ⚠️ Il se LÈVE tout seul si ORTHOP réclame à nouveau la prescription (branche `rea` de
+   * `Build Insert SQL`) — sans quoi un marquage erroné silencierait la patiente
+   * définitivement, une date de facturation n'étant visée qu'une fois.
    */
-  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | 'non_concerne' | null;
+  sms_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'echec' | 'non_concerne' | 'ordonnance_recue' | null;
   sms_le?: string | null;
   sms_message_id?: string | null;
   /**
@@ -222,8 +234,20 @@ export interface Facturation {
    * sans jamais rien envoyer. Posé le 2026-09-03 sur les 1 390 lignes antérieures à
    * l'ouverture du canal, qui avaient déjà reçu leur SMS — sans quoi le premier envoi
    * automatique aurait écrit à tout l'historique d'un coup.
+   *
+   * `ordonnance_recue` (2026-09-16) est posé par l'EXTRACTION, pas à la main : ORTHOP ne
+   * réclame plus cette prescription pour cette date, donc l'ordonnance est arrivée depuis
+   * l'import et il n'y a plus rien à annoncer.
+   *
+   * ⚠️ DISTINCT de `non_concerne`, et il faut que ça le reste : l'un est une décision
+   * humaine sur une cohorte, l'autre un constat sur une patiente. Les confondre rendrait
+   * impossible de dire, trois jours plus tard, pourquoi une ligne n'est pas partie.
+   *
+   * ⚠️ Il se LÈVE tout seul si ORTHOP réclame à nouveau la prescription (branche `rea` de
+   * `Build Insert SQL`) — sans quoi un marquage erroné silencierait la patiente
+   * définitivement, une date de facturation n'étant visée qu'une fois.
    */
-  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | 'non_concerne' | null;
+  email_statut?: 'envoye' | 'echec_envoi' | 'livre' | 'ouvert' | 'clique' | 'echec' | 'non_concerne' | 'ordonnance_recue' | null;
   email_le?: string | null;
   email_message_id?: string | null;
   email_ouvert_le?: string | null;

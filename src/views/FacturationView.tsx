@@ -91,6 +91,16 @@ interface ExtractResult {
   eligibles?: number;
   inseres?: number;
   deja_presents?: number;
+  /** Lignes qu'ORTHOP ne réclame plus : l'ordonnance est arrivée depuis l'import. */
+  resolues?: number | null;
+  /** Marquages levés : ORTHOP les réclame à nouveau, l'ordonnance n'est donc pas arrivée. */
+  reouvertes?: number | null;
+  /** Écartées À L'ENTRÉE parce que l'ordonnance était déjà fournie au moment de l'extraction. */
+  ecartes_ordonnance_recue?: number;
+  /** Dossiers illisibles (timeout, Fault). Non nul ⇒ **aucun** jugement n'a été porté. */
+  erreurs?: number;
+  /** false = extraction incomplète : rien n'a été ni marqué ni levé. */
+  jugement_applique?: boolean;
   apercu?: { nom: string; tel: string; email: string }[];
   erreur?: string;
 }
@@ -103,12 +113,20 @@ interface ExtractResult {
  * si les deux divergeaient un jour, ça se verrait immédiatement au lieu de passer inaperçu.
  * `dry_run` interroge ORTHOP sans rien insérer : c'est le mode de vérification.
  */
-async function extraireFacturation(token: string, palier: Palier, reference: string, dryRun: boolean): Promise<ExtractResult> {
+async function extraireFacturation(
+  token: string, palier: Palier, reference: string, dryRun: boolean, date?: string,
+): Promise<ExtractResult> {
   try {
     const r = await fetch(`${API_BASE}/webhook/orthop-extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ cible: 'facturation', palier, reference, dry_run: dryRun }),
+      body: JSON.stringify({
+        cible: 'facturation', palier, reference, dry_run: dryRun,
+        // ⚠️ « applicable du » EN CLAIR : il l'emporte sur `reference` côté serveur. C'est
+        // le seul moyen de viser une échéance passée — `reference` ne sait exprimer que
+        // « aujourd'hui + 30 » et ne désignera jamais le 15/10 quand on est le 16/09.
+        ...(date ? { date } : {}),
+      }),
       signal: AbortSignal.timeout(300000),
     });
     if (!r.ok) return { erreur: `Le serveur a répondu ${r.status}` };
@@ -146,6 +164,15 @@ export interface ResultatEnvoi {
   palier?: Palier | null;
   cibles_trouvees?: number;
   a_envoyer?: number;
+  /** Échéance filtrée côté serveur, ou `null`. Sert à RECOUPER ce qu'on croyait demander. */
+  echeance?: string | null;
+  /**
+   * Les fins de location RÉELLEMENT présentes dans le lot.
+   *
+   * ⚠️ Sans elle, le modal affiche un message — donc une date — pour un envoi qui peut en
+   * couvrir trois. L'opérateur confirme alors quelque chose qu'il n'a pas vu.
+   */
+  dates_visees?: { fin_de_location: string; n: number }[];
   ignores?: number;
   detail_ignores?: { id: number; raison: string }[];
   cout_segments?: number;
@@ -195,12 +222,16 @@ const WEBHOOK_ENVOI: Record<Canal, string> = {
  * peut pas y être servie deux fois, même en recliquant ; et le mail part aussi vers les
  * numéros FIXES, que le SMS ne peut pas atteindre.
  */
-async function envoyerCanal(token: string, canal: Canal, palier: Palier, dryRun: boolean): Promise<ResultatEnvoi> {
+async function envoyerCanal(
+  token: string, canal: Canal, palier: Palier, dryRun: boolean, echeance?: string | null,
+): Promise<ResultatEnvoi> {
   try {
     const r = await fetch(`${API_BASE}/webhook/${WEBHOOK_ENVOI[canal]}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ palier, dry_run: dryRun }),
+      // ⚠️ Le filtre est posé PAR LE SERVEUR : lui envoyer une liste d'ids depuis le
+      // navigateur laisserait passer les lignes ajoutées depuis le chargement de la page.
+      body: JSON.stringify({ palier, dry_run: dryRun, ...(echeance ? { echeance } : {}) }),
       signal: AbortSignal.timeout(dryRun ? 30000 : 300000),
     });
     if (!r.ok) return { erreur: `Le serveur a répondu ${r.status}` };
@@ -224,8 +255,8 @@ async function envoyerCanal(token: string, canal: Canal, palier: Palier, dryRun:
   }
 }
 
-const envoyerSms  = (token: string, palier: Palier, dryRun: boolean) => envoyerCanal(token, 'sms',  palier, dryRun);
-const envoyerMail = (token: string, palier: Palier, dryRun: boolean) => envoyerCanal(token, 'mail', palier, dryRun);
+const envoyerSms  = (token: string, palier: Palier, dryRun: boolean, e?: string | null) => envoyerCanal(token, 'sms',  palier, dryRun, e);
+const envoyerMail = (token: string, palier: Palier, dryRun: boolean, e?: string | null) => envoyerCanal(token, 'mail', palier, dryRun, e);
 
 async function chargerFacturation(token: string): Promise<FacturationData | { erreur: string }> {
   try {
@@ -260,6 +291,36 @@ function PalierChip({ palier }: { palier: Palier }) {
 }
 
 /** État d'acheminement du SMS, tel que Brevo le rapporte. */
+/**
+ * Bouton d'action d'un en-tête d'échéance. Volontairement discret : il vit dans une barre
+ * de navigation, pas dans un formulaire. Désactivé, il reste LISIBLE plutôt que grisé au
+ * point de disparaître — « 0 à envoyer » est une information.
+ */
+function BoutonEcheance({
+  onClick, disabled, actif, teinte, bord, titre, children,
+}: {
+  onClick: () => void; disabled?: boolean; actif?: boolean;
+  teinte: string; bord: string; titre: string; children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={titre}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '5px 10px', borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif',
+        fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap',
+        border: '1px solid ' + (disabled ? 'var(--border)' : bord),
+        background: disabled ? 'transparent' : (actif ? teinte : 'white'),
+        color: disabled ? 'var(--muted)' : (actif ? 'white' : teinte),
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      }}>
+      {children}
+    </button>
+  );
+}
+
 function SmsChip({ f }: { f: Facturation }) {
   if (isFixe(f.telephone)) return <Chip texte="Fixe · sans SMS" ton="neutre" />;
   switch (f.sms_statut) {
@@ -271,6 +332,9 @@ function SmsChip({ f }: { f: Facturation }) {
     // ⚠️ Sans ce cas, ces lignes retomberaient sur « À envoyer » et donneraient
     // l'impression d'un retard d'envoi qui n'existe pas — même piège que sur le mail.
     case 'non_concerne': return <Chip texte="Hors périmètre" ton="neutre" />;
+    // Constaté dans ORTHOP depuis l'import : l'ordonnance est arrivée, il n'y a plus rien
+    // à annoncer. ⚠️ À ne pas confondre avec « Hors périmètre », posé à la main.
+    case 'ordonnance_recue': return <Chip texte="Ordonnance reçue" ton="ok" />;
     default:            return <Chip texte="À envoyer"     ton="attente" />;
   }
 }
@@ -293,6 +357,8 @@ function MailChip({ f }: { f: Facturation }) {
     // ⚠️ Sans ce cas, ces lignes retomberaient sur « À envoyer » et donneraient
     // l'impression d'un retard d'envoi qui n'existe pas.
     case 'non_concerne': return <Chip texte="Hors périmètre" ton="neutre" />;
+    // Constaté dans ORTHOP depuis l'import : l'ordonnance est arrivée.
+    case 'ordonnance_recue': return <Chip texte="Ordonnance reçue" ton="ok" />;
     default:
       return f.email
         ? <Chip texte="À envoyer"  ton="attente" />
@@ -523,9 +589,16 @@ const SEUIL_CONFIRMATION = 20;
  * clic distrait ne doit pas pouvoir écrire à une centaine de patientes.
  */
 function EnvoiModal({
-  token, palier, canal, onClose, onFini,
+  token, palier, canal, echeance, onClose, onFini,
 }: {
   token: string; palier: Palier; canal: Canal;
+  /**
+   * « Applicable du » à viser, ou `null` pour tout le palier.
+   *
+   * ⚠️ Le filtre est posé PAR LE SERVEUR, pas par une liste d'ids construite ici : une
+   * ligne ajoutée par ORTHOP depuis le chargement de la page doit entrer dans le lot.
+   */
+  echeance?: string | null;
   onClose: () => void; onFini: (r: ResultatEnvoi) => void;
 }) {
   const conf = palierConf(palier);
@@ -539,7 +612,7 @@ function EnvoiModal({
   useEffect(() => {
     let vivant = true;
     (async () => {
-      const r = await envoyerCanal(token, canal, palier, true);
+      const r = await envoyerCanal(token, canal, palier, true, echeance);
       if (!vivant) return;
       setApercu(r);
       setEtat('pret');
@@ -548,13 +621,25 @@ function EnvoiModal({
   }, [token, palier, canal]);
 
   const nb = apercu?.a_envoyer ?? 0;
-  const besoinCoche = nb > SEUIL_CONFIRMATION;
-  const peutEnvoyer = etat === 'pret' && nb > 0 && (!besoinCoche || coche);
+  // Les fins de location réellement dans le lot, telles que le SERVEUR les a comptées.
+  const dates = apercu?.dates_visees ?? [];
+  // ⚠️⚠️ LE RECOUPEMENT, et non la supposition. On compare l'échéance qu'on croyait
+  // demander à celle que le serveur dit avoir filtrée. Même précaution que le modal
+  // d'extraction, celle qui avait permis de voir le décalage d'un jour : un désaccord
+  // s'affiche au lieu d'être supposé impossible.
+  const desaccordEcheance = etat === 'pret' && !!apercu && !apercu.erreur
+    && (apercu.echeance ?? null) !== (echeance ?? null);
+  // ⚠️ Plusieurs dates dans un même envoi ⇒ case à cocher OBLIGATOIRE, quel que soit le
+  // volume. Le bloc « Message envoyé » ne peut en montrer qu'UNE : sans cette garde,
+  // l'opérateur confirme une date en en envoyant trois. Mesuré le 2026-09-16 : 300 SMS
+  // J-30 en attente sur trois fins de location, sous un aperçu qui n'en montrait qu'une.
+  const besoinCoche = nb > SEUIL_CONFIRMATION || dates.length > 1;
+  const peutEnvoyer = etat === 'pret' && nb > 0 && !desaccordEcheance && (!besoinCoche || coche);
   const message = estMail ? (apercu?.apercu?.[0]?.sujet ?? null) : (apercu?.apercu?.[0]?.message ?? null);
 
   async function envoyer() {
     setEtat('envoi');
-    const r = await envoyerCanal(token, canal, palier, false);
+    const r = await envoyerCanal(token, canal, palier, false, echeance);
     setResultat(r);
     setEtat('fini');
     if (!r.erreur) onFini(r);
@@ -574,6 +659,11 @@ function EnvoiModal({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <h2 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 17, fontWeight: 800, color: 'var(--text)', margin: 0 }}>
             Envoyer les {nomCanal} {conf.label}
+            {echeance && (
+              <span style={{ fontWeight: 600, color: 'var(--muted)' }}>
+                {' — fin de location du '}{formatDate(finDeLocation(echeance))}
+              </span>
+            )}
           </h2>
           {etat !== 'envoi' && (
             <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>
@@ -594,6 +684,20 @@ function EnvoiModal({
           </div>
         )}
 
+        {/* ⚠️ L'écran et le serveur ne visent pas la même chose : on refuse plutôt que de
+            deviner lequel a raison. L'envoi est bloqué tant que le désaccord dure. */}
+        {desaccordEcheance && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10, marginBottom: 14 }}>
+            <AlertCircle size={15} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0, lineHeight: 1.55 }}>
+              <strong>Désaccord sur l’échéance.</strong> Cet écran visait{' '}
+              {echeance ? formatDate(echeance) : 'tout le palier'}, le serveur a filtré{' '}
+              {apercu?.echeance ? formatDate(apercu.echeance) : 'tout le palier'}. Rien ne
+              partira tant que les deux ne concordent pas.
+            </p>
+          </div>
+        )}
+
         {/* ── Avant envoi ─────────────────────────────────────────────── */}
         {etat === 'pret' && apercu && !apercu.erreur && (
           <>
@@ -611,7 +715,27 @@ function EnvoiModal({
                   {!estMail && ligne('Segments facturés', apercu.cout_segments ?? '—')}
                   {estMail && apercu.expediteur && ligne('Expéditeur', `${apercu.expediteur.name} <${apercu.expediteur.email}>`)}
                   {(apercu.ignores ?? 0) > 0 && ligne('Écartés', apercu.ignores)}
+                  {/* ⚠️ Toujours affiché, même à une seule date : c'est le chiffre qui dit
+                      si le message ci-dessous décrit tout le lot ou seulement une part. */}
+                  {ligne(dates.length > 1 ? 'Fins de location couvertes' : 'Fin de location',
+                    dates.length === 0 ? '—'
+                      : dates.map(d => d.fin_de_location + ' (' + d.n + ')').join(' · '))}
                 </div>
+
+                {/* Un envoi qui couvre plusieurs dates n'est pas une erreur — c'est un
+                    palier en retard. Mais il doit être IMPOSSIBLE de le faire sans le voir :
+                    le bloc « Message envoyé » ci-dessous n'en montre qu'une. */}
+                {dates.length > 1 && (
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '12px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, marginBottom: 14 }}>
+                    <AlertCircle size={15} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
+                    <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
+                      <strong>Cet envoi couvre {dates.length} fins de location différentes.</strong>{' '}
+                      Chaque patiente reçoit bien SA date, mais l’aperçu ci-dessous n’en montre
+                      qu’une. Pour n’en traiter qu’une à la fois, fermez et utilisez le bouton
+                      de l’échéance voulue.
+                    </p>
+                  </div>
+                )}
 
                 {(apercu.detail_ignores?.length ?? 0) > 0 && (
                   <div style={{ padding: '10px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 9, marginBottom: 14 }}>
@@ -741,6 +865,7 @@ const VUES_ENVOI: VueEnvoi[] = [
   { id: 'sms_livre',   libelle: 'Livrés',     canal: 'sms', teste: f => f.sms_statut === 'livre' },
   { id: 'sms_echec',   libelle: 'Non livrés', canal: 'sms', alerte: true, teste: f => ECHECS_ENVOI.includes(f.sms_statut ?? '') },
   { id: 'sms_hors',    libelle: 'Hors périmètre', canal: 'sms', teste: f => f.sms_statut === 'non_concerne' },
+  { id: 'sms_recue',   libelle: 'Ordonnance reçue', canal: 'sms', teste: f => f.sms_statut === 'ordonnance_recue' },
   { id: 'sms_fixe',    libelle: 'Fixes',      canal: 'sms', teste: f => isFixe(f.telephone) },
 
   { id: 'mail_attente', libelle: 'À envoyer',   canal: 'mail', teste: f => !f.email_statut },
@@ -750,6 +875,7 @@ const VUES_ENVOI: VueEnvoi[] = [
   { id: 'mail_clique',  libelle: 'dont cliqués',  canal: 'mail', sousEnsemble: true, teste: f => f.email_statut === 'clique' },
   { id: 'mail_echec',   libelle: 'Non livrés',    canal: 'mail', alerte: true, teste: f => ECHECS_ENVOI.includes(f.email_statut ?? '') },
   { id: 'mail_hors',    libelle: 'Hors périmètre', canal: 'mail', teste: f => f.email_statut === 'non_concerne' },
+  { id: 'mail_recue',   libelle: 'Ordonnance reçue', canal: 'mail', teste: f => f.email_statut === 'ordonnance_recue' },
 ];
 
 const vueParId = (id: string) => VUES_ENVOI.find(v => v.id === id) ?? VUES_ENVOI[0];
@@ -763,7 +889,7 @@ export function FacturationView({ user }: { user: AuthUser }) {
   const [succes, setSucces]       = useState('');
   const [reference, setReference] = useState(aujourdhuiIso());
   const [modal, setModal]         = useState<Palier | null>(null);
-  const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal } | null>(null);
+  const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal; echeance?: string | null } | null>(null);
   const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
   /**
    * INTERRUPTEUR DE PAUSE du module. Coupe les envois AUTOMATIQUES (SMS et mail des crons)
@@ -816,6 +942,10 @@ export function FacturationView({ user }: { user: AuthUser }) {
   // Groupes dépliés, par « applicable du ». Une valeur explicite l'emporte sur le défaut.
   const [ouverts, setOuverts]     = useState<Record<string, boolean>>({});
   const [echeance, setEcheance]   = useState('');
+  // Échéance en cours de rafraîchissement, ou null. Une seule à la fois : chaque extraction
+  // enchaîne une centaine d'appels SOAP, et c'est le parallélisme qui a saturé ORTHOP le
+  // 2026-09-11 (35 fausses résolutions sur 39).
+  const [majEcheance, setMajEcheance] = useState<string | null>(null);
   // Aperçu par palier, obtenu du workflow d'envoi en `dry_run` : il fournit le texte exact
   // du message ET le nombre réel de destinataires restants. C'est la même source que
   // l'envoi, donc l'aperçu ne peut pas mentir.
@@ -920,6 +1050,81 @@ export function FacturationView({ user }: { user: AuthUser }) {
         return { date, lignes: lg, resume };
       });
   }, [visibles]);
+
+  /**
+   * Ce qui reste à envoyer, par échéance.
+   *
+   * ⚠️ Calculé sur `duPalier` et NON sur `visibles` : les boutons d'en-tête agissent sur
+   * toute l'échéance, pas sur ce que la recherche laisse voir. Sans ça, le bouton
+   * annoncerait « 3 » et le serveur en enverrait 83 — c'est exactement l'écart tuile/liste
+   * qui a dû être corrigé sur l'écran Parcours.
+   *
+   * ⚠️ Les prédicats sont EMPRUNTÉS aux pastilles (`sms_attente` / `mail_attente`), jamais
+   * recopiés : deux définitions de « à envoyer » finiraient par diverger.
+   */
+  const parEcheance = useMemo(() => {
+    const aSms = vueParId('sms_attente').teste;
+    const aMail = vueParId('mail_attente').teste;
+    const m = new Map<string, { sms: number; mail: number }>();
+    for (const f of duPalier) {
+      const k = f.date_echeance || '';
+      const v = m.get(k) ?? { sms: 0, mail: 0 };
+      if (aSms(f)) v.sms++;
+      if (aMail(f)) v.mail++;
+      m.set(k, v);
+    }
+    return m;
+  }, [duPalier]);
+
+  /**
+   * Rafraîchir UNE échéance depuis ORTHOP — le geste à faire AVANT d'envoyer.
+   *
+   * Ce que ça change réellement, depuis le 2026-09-16 :
+   *   • les demandes créées par ORTHOP après notre import entrent (4 patientes perdues en
+   *     une matinée le 15/09, faute de ce geste) ;
+   *   • les mamans qui ont fourni leur ordonnance DEPUIS l'import passent en
+   *     « Ordonnance reçue » et ne recevront plus ni SMS ni mail ;
+   *   • un marquage posé à tort est LEVÉ dès qu'ORTHOP réclame à nouveau la prescription.
+   *
+   * ⚠️ L'opération est sans risque : l'insertion reste `ON CONFLICT DO NOTHING`, et le
+   * marquage ne touche que des lignes dont rien n'est encore parti.
+   */
+  async function actualiserEcheance(date: string) {
+    if (onglet === 'lots' || majEcheance) return;
+    setMajEcheance(date);
+    setError(''); setSucces('');
+    const r = await extraireFacturation(user.token, onglet, reference, false, date);
+    setMajEcheance(null);
+    const quand = formatDate(finDeLocation(date));
+    if (r.erreur) { setError(`Mise à jour du ${quand} : ${r.erreur}`); return; }
+
+    const n = (v: number | null | undefined) => v ?? 0;
+    const alertes: string[] = [];
+
+    // ⚠️⚠️ LE CONTRÔLE D'INTÉGRITÉ. Tout écran qui affiche une extraction doit vérifier
+    // `dossiers_trouves = eligibles + ecartes_sans_ligne + ecartes_ordonnance_recue + erreurs`.
+    // C'est le SEUL contrôle qui rend visible une extraction amputée — son absence est ce
+    // qui a laissé la panne des fausses résolutions tenir trois jours.
+    const explique = n(r.eligibles) + n(r.ecartes_sans_ligne_a_renouveler)
+      + n(r.ecartes_ordonnance_recue) + n(r.erreurs);
+    if (r.mode === 'insert' && n(r.dossiers_trouves) !== explique) {
+      alertes.push(`${n(r.dossiers_trouves)} dossiers trouvés mais ${explique} expliqués : des dossiers ont été perdus en route.`);
+    }
+    // ⚠️ Une extraction incomplète n'a marqué PERSONNE — et il faut le dire, sinon son
+    // silence se lit comme « tout le monde attend encore son ordonnance ».
+    if (n(r.erreurs) > 0) {
+      alertes.push(`${n(r.erreurs)} dossier(s) illisible(s) chez ORTHOP : aucune ordonnance reçue n'a été relevée sur cette date. Relancez dans un moment.`);
+    }
+    if (alertes.length) setError(`Mise à jour du ${quand} — ${alertes.join(' ')}`);
+
+    const bouts: string[] = [];
+    const pl = (v: number) => (v > 1 ? 's' : '');
+    if (n(r.inseres) > 0) bouts.push(`${r.inseres} ajoutée${pl(n(r.inseres))}`);
+    if (n(r.resolues) > 0) bouts.push(`${r.resolues} ordonnance${pl(n(r.resolues))} reçue${pl(n(r.resolues))} — plus rien ne leur partira`);
+    if (n(r.reouvertes) > 0) bouts.push(`${r.reouvertes} remise${pl(n(r.reouvertes))} en attente`);
+    setSucces(`Échéance du ${quand} à jour${bouts.length ? ' : ' + bouts.join(', ') : ' — rien n’a changé'}.`);
+    charger();
+  }
 
   // Compteurs de la barre de statistiques. ⚠️ Calculés sur `duPalier` — donc sur TOUT le
   // palier, jamais sur la liste filtrée : sinon ils changeraient à chaque frappe dans la
@@ -1287,6 +1492,7 @@ export function FacturationView({ user }: { user: AuthUser }) {
             groupes={groupes.map((g): GroupeEntete => {
               const conf = palierConf(onglet);
               const cible = g.date === echeanceCible;
+              const cpt = parEcheance.get(g.date) ?? { sms: 0, mail: 0 };
               return {
                 cle: g.date,
                 titre: formatDateLongue(finDeLocation(g.date)) || '(échéance inconnue)',
@@ -1296,6 +1502,43 @@ export function FacturationView({ user }: { user: AuthUser }) {
                 accent: cible,
                 accentBord: conf.bord,
                 accentFond: conf.fond,
+                // ⚠️⚠️ AGIR ÉCHÉANCE PAR ÉCHÉANCE. Un palier en retard en porte plusieurs,
+                // chacune avec SA fin de location dans le message : le 2026-09-16, le J-30
+                // en comptait trois (14, 15 et 16/10) pour 300 SMS en attente. Envoyer le
+                // palier entier reste possible depuis la carte du haut ; ici on traite une
+                // date à la fois, et le serveur filtre lui-même sur cette date.
+                actions: (
+                  <>
+                    <BoutonEcheance
+                      onClick={() => setModalEnvoi({ palier: onglet, canal: 'sms', echeance: g.date })}
+                      disabled={cpt.sms === 0} teinte={conf.teinte} bord={conf.bord}
+                      titre={cpt.sms === 0
+                        ? 'Aucun SMS en attente sur cette échéance'
+                        : `Envoyer les ${cpt.sms} SMS de cette échéance`}>
+                      <MessageSquare size={12} /> SMS {cpt.sms > 0 ? cpt.sms : ''}
+                    </BoutonEcheance>
+                    <BoutonEcheance
+                      onClick={() => setModalEnvoi({ palier: onglet, canal: 'mail', echeance: g.date })}
+                      disabled={cpt.mail === 0} teinte={conf.teinte} bord={conf.bord}
+                      titre={cpt.mail === 0
+                        ? 'Aucun mail en attente sur cette échéance'
+                        : `Envoyer les ${cpt.mail} mails de cette échéance`}>
+                      <Mail size={12} /> Mail {cpt.mail > 0 ? cpt.mail : ''}
+                    </BoutonEcheance>
+                    {/* ⚠️ Une seule mise à jour à la fois : sept extractions simultanées,
+                        chacune enchaînant une centaine d'appels SOAP, sont ce qui a saturé
+                        ORTHOP le 2026-09-11. */}
+                    <BoutonEcheance
+                      onClick={() => actualiserEcheance(g.date)}
+                      disabled={majEcheance !== null}
+                      teinte="var(--muted)" bord="var(--border)"
+                      titre="Réinterroger ORTHOP sur cette échéance : récupère les demandes créées depuis, et retire celles dont l’ordonnance est arrivée">
+                      <RefreshCw size={12} style={majEcheance === g.date
+                        ? { animation: 'spin .8s linear infinite' } : undefined} />
+                      {majEcheance === g.date ? 'Mise à jour…' : 'Actualiser'}
+                    </BoutonEcheance>
+                  </>
+                ),
               };
             })}
             estOuvert={estOuvert}
@@ -1362,6 +1605,7 @@ export function FacturationView({ user }: { user: AuthUser }) {
           token={user.token}
           palier={modalEnvoi.palier}
           canal={modalEnvoi.canal}
+          echeance={modalEnvoi.echeance ?? null}
           onClose={() => setModalEnvoi(null)}
           onFini={r => {
             const n = r.envoyes ?? 0;
