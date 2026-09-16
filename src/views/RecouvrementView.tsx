@@ -8,6 +8,7 @@ import {
   // La couverture ORTHOP : une seule définition, ici, partagée par l'écran et par le miroir
   // des crons. Voir `raisonDeNePasSolliciter` pour ce qui bloque et ce qui ne fait qu'alerter.
   couverteAujourdhui, raisonDeNePasSolliciter, type Rail,
+  jointVoixDansLeRail, jointParEcritDansLeRail,
 } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
 import type { SondeRail } from './ParcoursRails';
@@ -184,6 +185,38 @@ function smsNonRecu(r: Relance): boolean {
  *   SMS   — Brevo confirme la livraison
  *   mail  — livré, ouvert ou cliqué ; « envoyé » n'est PAS une preuve de réception
  */
+/**
+ * ── CE QU'ON PEUT APPELER MAINTENANT, TOUS RAILS CONFONDUS ────────────────────
+ * Une seule liste pour les étapes en service, afin de sélectionner et lancer en une fois
+ * plutôt que de passer d'une échéance à l'autre. Mesure du 2026-09-16 : 296 dossiers.
+ *
+ * ⚠️⚠️ LES RÈGLES SE LISENT AU RAIL, PAS AU DOSSIER. Un SMS livré lors de l'appel J+1 ne
+ * dit rien de ce qu'il faut faire une semaine plus tard — c'est la raison d'être de
+ * l'étape suivante. Appliquée au dossier, la même intention vidait le rail J+7 de 417
+ * dossiers à 5 (mesure du 2026-09-04), et j'ai refait l'erreur ce matin en comptant.
+ *
+ * ⚠️ `railAtteint()` et non `railDeRelance()` : on veut la dernière étape DÉPASSÉE, pas
+ * « a-t-elle un rendez-vous pile aujourd'hui » — sinon la liste serait vide 6 jours sur 7.
+ *
+ * ⚠️ Miroir de `PG Cibles Appels` / `PG Cibles J7`. Si l'un change et pas l'autre, l'écran
+ * propose un travail que le serveur refusera.
+ */
+function appelableMaintenant(r: Relance): boolean {
+  if (raisonDeNePasSolliciter(r)) return false;                 // renouvelée ou couverte
+  if (r.ordonnance_deja_envoyee) return false;                  // elle l'a dit au téléphone
+  if (!r.telephone) return false;
+  if ((r.nb_tentatives ?? 0) >= 5) return false;
+  const rail = railAtteint(r);
+  if (!rail) return false;                                      // son échéance n'est pas venue
+  // ⚠️⚠️ SEULEMENT LES ÉTAPES EN SERVICE. Sans ce test, la liste passait de 296 à 638 :
+  // elle proposait le travail des étapes J+14 et au-delà, qui n'ont ni agent dédié ni cron.
+  // Un écran qui propose un travail que rien ne peut exécuter est exactement le défaut que
+  // ce projet cherche à ne plus produire. Le jour où une étape ouvre, elle entre d'elle-même
+  // dans cette liste — `actif` est porté par la définition du rail, pas recopié ici.
+  if (!rail.actif) return false;
+  return !jointVoixDansLeRail(r, rail) && !jointParEcritDansLeRail(r, rail);
+}
+
 function aucunContact(r: Relance): boolean {
   const jointeVocalement = r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert'
     || ['depose_el', 'depose_agent'].includes(String(r.vocal_statut || ''));
@@ -206,9 +239,12 @@ function aucunContact(r: Relance): boolean {
  * « Suivi » et le bouton « À appeler » : une seule barre, cliquable, qui filtre le tableau.
  * `alerte` = pastille rouge quand le compte est non nul (il y a quelque chose à traiter).
  */
-type VueFiltre = 'couverte' | 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
+type VueFiltre = 'appelable' | 'couverte' | 'a_traiter' | 'a_appeler' | 'messagerie' | 'raccroche' | 'sms_non_livre' | 'echec_appel' | 'deja_envoyee' | 'mail_clique' | 'vocal_manquant' | 'tout';
 
 const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; alerte?: boolean; title: string }[] = [
+  // ⚠️ En TÊTE : c'est la liste de travail du jour. Deux clics — axe « Par échéance »,
+  // puis cette pastille — donnent les étapes en service rassemblées, prêtes à sélectionner.
+  { id: 'appelable',     label: 'Appelable',     match: appelableMaintenant,               title: "Tous rails confondus : ni renouvelée, ni couverte, joignable, quota non épuisé, et pas encore jointe DANS SON ÉTAPE" },
   { id: 'a_traiter',     label: 'À traiter',     match: r => !raisonDeNePasSolliciter(r) && aucunContact(r),                      title: 'Jamais appelées, aucun SMS livré, aucun mail reçu — rien ne leur est parvenu' },
   { id: 'a_appeler',     label: 'À appeler',     match: r => r.statut === 'À appeler',     title: 'Jamais encore appelées' },
   { id: 'messagerie',    label: 'Messagerie',    match: r => r.statut === 'Répondeur',     title: 'Message vocal laissé — le SMS est le seul vrai point de contact' },

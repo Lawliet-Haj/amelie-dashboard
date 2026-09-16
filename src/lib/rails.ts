@@ -340,7 +340,15 @@ export function lignesDuRail(
   if (rail.source !== 'relances') return [];
   const suivante = etapeSuivante(rail);
   return lignes.filter(r => {
-    if (r.resolu_le || !r.date_echeance) return false;
+    // ⚠️⚠️ UNE COUVERTE N'EST PAS DANS LE RAIL — demande du client, 2026-09-16.
+    // Elle a une ordonnance qui court : il n'y a rien à lui demander, donc rien à faire
+    // d'elle à cette étape. Mesure du jour, AVANT correction : J+1 affichait 75 dossiers
+    // pour 54 à appeler, J+7 59 pour 35, J+14 35 pour 25.
+    //
+    // ⚠️ C'est une SUSPENSION, pas une sortie : quand la couverture expire, la ligne
+    // revient d'elle-même dans le rail qu'elle atteint alors. Six dossiers sont dans ce
+    // cas (couverture s'achevant avant J+40) — voir `couverteAujourdhui`.
+    if (estSortie(r) || couverteAujourdhui(r, auj) || !r.date_echeance) return false;
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) return false;
     if (portee === 'toutes') return true;
