@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { read, utils } from 'xlsx';
 import { ParcoursRails } from './ParcoursRails';
 import { ResultatsRecouvrement } from './ResultatsRecouvrement';
+import { ControleJournee } from './ControleJournee';
 import {
   railParCode, railDeRelance, railAtteint, ecritsDeRelance, lignesDuRail, etapeSuivante,
   ecartEcheance, RAILS_RELANCES, aRattraper, echeancesARattraper, type PorteeRail,
@@ -17,7 +18,7 @@ import type { SondeRail } from './ParcoursRails';
 type Axe = 'parcours' | 'rail' | 'jour' | 'echeance';
 import {
   Upload, RefreshCw, Edit2, X, CheckCircle, FileText, AlertCircle,
-  Phone, TrendingUp, PhoneCall, CheckSquare, Trash2, Download,
+  Phone, TrendingUp, ClipboardCheck, PhoneCall, CheckSquare, Trash2, Download,
   MessageSquare, History, Play, Pause, ChevronRight,
   UserCheck, PhoneOff, ChevronLeft, Layers, Voicemail, ArrowRightCircle, CloudDownload, Send,
 } from 'lucide-react';
@@ -1453,7 +1454,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [batches, setBatches]               = useState<BatchGroup[]>([]);
   const [loading, setLoading]               = useState(true);
   const [error, setError]                   = useState('');
-  const [activeTab, setActiveTab]           = useState<'relances' | 'resultats' | 'campagnes'>('relances');
+  const [activeTab, setActiveTab]           = useState<'relances' | 'controle' | 'resultats' | 'campagnes'>('relances');
   const [showImport, setShowImport]         = useState(false);
   const [showManual, setShowManual]         = useState(false);
   const [showOrthop, setShowOrthop]         = useState(false);
@@ -2375,6 +2376,10 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 12, padding: 4, gap: 2 }}>
           {([
             { id: 'relances' as const, label: 'Relances', count: relances.length },
+            // ⚠️ `count: 0` volontairement : un contrôle n'est pas une file de travail.
+            // Une pastille chiffrée sur un onglet de LECTURE inviterait à « la vider »,
+            // alors qu'il n'y a rien à y faire — l'action vit dans « Relances ».
+            { id: 'controle' as const, label: 'Contrôle', count: 0, icon: <ClipboardCheck size={13} /> },
             // `count: 0` volontairement : un TAUX n'est pas un compte, et afficher le nombre
             // de dossiers resolus dans la pastille laisserait croire a une file de travail.
             { id: 'resultats' as const, label: 'Résultats', count: 0, icon: <TrendingUp size={13} /> },
@@ -2415,6 +2420,15 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
 
       {/* ── Campagnes tab ───────────────────────────────────────────────────── */}
       {/* Resultats : combien de patientes relancees ont renvoye leur ordonnance. */}
+      {/* Contrôle : qui n'a été joint par personne, sur la journée choisie. LECTURE SEULE. */}
+      {activeTab === 'controle' && (
+        <ControleJournee
+          relances={relances}
+          enPause={reglagePause ? reglagePause.en_pause : null}
+          motifPause={reglagePause?.motif ?? null}
+        />
+      )}
+
       {activeTab === 'resultats' && (
         <ResultatsRecouvrement relances={relances} aujourdhui={jourCourant} />
       )}
