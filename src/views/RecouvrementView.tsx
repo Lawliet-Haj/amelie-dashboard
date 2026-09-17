@@ -2427,11 +2427,14 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       {/* ── Campagnes tab ───────────────────────────────────────────────────── */}
       {/* Resultats : combien de patientes relancees ont renvoye leur ordonnance. */}
       {/* Contrôle : qui n'a été joint par personne, sur la journée choisie. LECTURE SEULE. */}
+      {/* ⚠️ `onVerifie` reçoit le MEME handler que le bouton « Vérifié » de la liste
+          de travail : un second appel à W-Update-Relance aurait fini par diverger. */}
       {activeTab === 'controle' && (
         <ControleJournee
           relances={relances}
           enPause={reglagePause ? reglagePause.en_pause : null}
           motifPause={reglagePause?.motif ?? null}
+          onVerifie={markOrdoVerified}
         />
       )}
 

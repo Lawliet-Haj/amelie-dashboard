@@ -29,15 +29,22 @@ function hhmmParis(): number {
  * Il répond à une seule question : **parmi les patientes qui avaient un rendez-vous ce
  * jour-là, lesquelles n'ont été jointes par personne ?**
  *
- * ⚠️⚠️ AUCUN BOUTON D'ACTION ICI, et c'est le point. Demande du client (2026-09-17) :
- * « ils n'auront pas besoin de lancer des appels ou d'envoyer des SMS, ils vont juste
- * contrôler ce qui s'est passé ». L'onglet « Relances » porte déjà tout l'outillage
- * d'action — sélection, appel, envoi, import. Le mélanger avec un contrôle oblige à lire
- * un écran chargé pour répondre à une question simple, et met un bouton « Appeler » sous
- * la main de quelqu'un qui n'est venu que vérifier.
+ * ⚠️⚠️ AUCUNE ACTION SORTANTE ICI — rien qui atteigne une patiente. Demande du
+ * client (2026-09-17) : « ils n'auront pas besoin de lancer des appels ou d'envoyer des
+ * SMS, ils vont juste contrôler ce qui s'est passé ». L'onglet « Relances » porte déjà
+ * tout l'outillage d'action ; le mélanger avec un contrôle oblige à lire un écran chargé
+ * pour répondre à une question simple, et met un bouton « Appeler » sous la main de
+ * quelqu'un qui n'est venu que vérifier.
  *
- * 👉 Si une action s'impose après lecture, elle se fait dans « Relances ». Ne pas ajouter
- * de bouton ici « parce que ce serait pratique » : ce serait revenir à l'écran d'avant.
+ * ⚠️ UNE SEULE EXCEPTION, ajoutée le même jour à la demande du client après essai : le
+ * bouton « Vérifié » de la liste des déclarations. Il ne contacte personne — il lève un
+ * drapeau — et c'est exactement la suite que cette liste appelle : elle existe pour
+ * rendre ces déclarations visibles, et la seule chose à en faire est de les marquer
+ * contrôlées. Obliger à retrouver la même patiente dans « Relances » était une friction,
+ * pas une protection.
+ *
+ * ==> La ligne à tenir n'est donc pas « aucun bouton » mais AUCUN CONTACT SORTANT. Un
+ * bouton qui appelle, envoie un SMS ou un mail n'a rien à faire ici.
  */
 
 /**
@@ -147,7 +154,7 @@ function PourquoiRien({ r, rail }: { r: Relance; rail: Rail }) {
   return <span style={{ color: 'var(--muted)' }}>{bouts.join(' · ')}</span>;
 }
 
-export function ControleJournee({ relances, enPause, motifPause }: {
+export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
   relances: Relance[];
   /**
    * Le module est-il en pause ? `null` = on n'a pas pu lire l'interrupteur.
@@ -158,7 +165,19 @@ export function ControleJournee({ relances, enPause, motifPause }: {
    */
   enPause?: boolean | null;
   motifPause?: string | null;
+  /**
+   * Lève le drapeau « dit avoir envoyé » sur un dossier.
+   *
+   * ⚠️ Fourni PAR LE PARENT (`markOrdoVerified` de RecouvrementView), qui porte déjà
+   * l'appel à W-Update-Relance et met à jour sa propre liste — la ligne disparaît donc
+   * d'elle-même. Réécrire le fetch ici en aurait fait une seconde copie, vouée à
+   * diverger.
+   */
+  onVerifie?: (r: Relance) => Promise<void>;
 }) {
+  // Le dossier dont la vérification est en cours : le bouton se verrouille le temps
+  // de l'aller-retour, sinon un double clic part deux fois.
+  const [verifEnCours, setVerifEnCours] = useState<number | null>(null);
   const ajd = aujourdhuiIso();
   const [jour, setJour] = useState(ajd);
   const hier = decalerJours(ajd, -1);
@@ -458,9 +477,10 @@ export function ControleJournee({ relances, enPause, motifPause }: {
             <MessageSquareWarning size={16} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
             <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
               Ces patientes ont dit, pendant un appel, avoir déjà envoyé leur ordonnance.
+              Tant que personne ne vérifie, <strong>elles ne sont plus appelées</strong>.
               <strong> Cette liste n’est pas limitée à la journée choisie</strong> : elle reste
-              affichée tant que personne n’a vérifié. La vérification se fait depuis l’onglet
-              « Relances », avec le bouton « Vérifié ».
+              affichée tant qu’elle n’a pas été traitée. Le bouton « Vérifié » retire le
+              signalement et remet la patiente dans le parcours.
             </p>
           </div>
           {declares.groupes.map(g => (
@@ -471,7 +491,7 @@ export function ControleJournee({ relances, enPause, motifPause }: {
                   {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''} — étape atteinte
                 </span>
               </p>
-              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit']}>
+              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit', '']}>
                 {g.lignes.map(r => (
                   <tr key={r.id}>
                     <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -500,6 +520,32 @@ export function ControleJournee({ relances, enPause, motifPause }: {
                             ORTHOP la réclame toujours — à vérifier
                           </span>}
                     </td>
+                    {/* ⚠️ La SEULE action de cet écran, et elle ne contacte personne :
+                        elle lève le drapeau, donc la patiente redevient appelable par le
+                        parcours. C'est irréversible depuis ici — le drapeau ne se repose
+                        que lors d'un prochain appel où elle le redirait. */}
+                    <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {onVerifie && (
+                        <button
+                          onClick={async () => {
+                            setVerifEnCours(r.id);
+                            await onVerifie(r);
+                            setVerifEnCours(null);
+                          }}
+                          disabled={verifEnCours !== null}
+                          title="Dossier contrôlé — retirer ce signalement et remettre la patiente dans le parcours"
+                          style={{
+                            padding: '4px 12px', borderRadius: 'var(--r-md)',
+                            fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 700,
+                            border: '1px solid ' + (verifEnCours !== null ? 'var(--border)' : '#a7f3d0'),
+                            background: verifEnCours === r.id ? '#ecfdf5' : 'white',
+                            color: verifEnCours !== null ? 'var(--muted)' : '#047857',
+                            cursor: verifEnCours !== null ? 'not-allowed' : 'pointer',
+                          }}>
+                          {verifEnCours === r.id ? 'Enregistrement…' : 'Vérifié'}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </DataTable>
@@ -509,7 +555,7 @@ export function ControleJournee({ relances, enPause, motifPause }: {
       ))}
 
       <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '18px 2px 0', lineHeight: 1.6 }}>
-        Cet écran ne déclenche rien : il se contente de lire. Les chiffres reflètent l’état
+        Cet écran n’envoie rien : ni appel, ni SMS, ni mail. Les chiffres reflètent l’état
         <strong> de maintenant</strong> — un SMS livré cette nuit apparaît donc sur la journée d’hier, ce
         qui est voulu. Les patientes dont l’ordonnance est arrivée, ou couvertes par une ordonnance en
         cours, ne sont pas comptées : aucun contact ne leur était dû.
