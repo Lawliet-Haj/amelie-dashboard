@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock, MessageSquareWarning } from 'lucide-react';
+import { CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock, MessageSquareWarning, BookOpen } from 'lucide-react';
 import type { Relance } from '../types';
 import { Chip, DataTable, tdStyle, tdDiscret } from '../ui';
 import {
@@ -286,6 +286,19 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
         <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
           {formatDateLongue(jour)}
         </span>
+        {/* ⚠️ Le mode opératoire est servi par nginx depuis `public/docs/` : un lien, pas
+            un fichier à retrouver dans le dépôt. Chemin ABSOLU — l'application est une SPA,
+            un chemin relatif dépendrait de la route affichée. `noopener` par principe. */}
+        <a
+          href="/docs/mode-op-controle-journee.html" target="_blank" rel="noopener noreferrer"
+          title="Comment contrôler la journée — document imprimable, s’ouvre dans un onglet"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none',
+            padding: '5px 11px', borderRadius: 'var(--r-md)', border: '1px solid var(--border)',
+            background: 'white', color: 'var(--muted)', fontSize: 12, fontWeight: 600,
+          }}>
+          <BookOpen size={13} /> Mode d’emploi
+        </a>
       </div>
 
       {/* ⚠️ Deux raisons parfaitement NORMALES de ne voir personne de joint. Les taire
