@@ -1454,7 +1454,13 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   const [batches, setBatches]               = useState<BatchGroup[]>([]);
   const [loading, setLoading]               = useState(true);
   const [error, setError]                   = useState('');
-  const [activeTab, setActiveTab]           = useState<'relances' | 'controle' | 'resultats' | 'campagnes'>('relances');
+  /**
+   * ⚠️ « Contrôle » EST LA VUE PAR DÉFAUT — demande du client, 2026-09-17. La plupart des
+   * ouvertures de cet écran servent à vérifier ce qui s'est passé, pas à lancer quoi que ce
+   * soit : arriver sur la console de travail obligeait à un clic pour répondre à la
+   * question la plus fréquente, et exposait les boutons d'action à qui venait seulement lire.
+   */
+  const [activeTab, setActiveTab]           = useState<'relances' | 'controle' | 'resultats' | 'campagnes'>('controle');
   const [showImport, setShowImport]         = useState(false);
   const [showManual, setShowManual]         = useState(false);
   const [showOrthop, setShowOrthop]         = useState(false);

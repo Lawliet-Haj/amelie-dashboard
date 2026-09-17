@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react';
-import { CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock } from 'lucide-react';
+import { CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock, MessageSquareWarning } from 'lucide-react';
 import type { Relance } from '../types';
 import { Chip, DataTable, tdStyle, tdDiscret } from '../ui';
 import {
   RAILS_RELANCES, lignesDuRail, jointVoixDansLeRail, jointParEcritDansLeRail,
-  ecartEcheance, type Rail,
+  ecartEcheance, railAtteint, estSortie, couverteAujourdhui, type Rail,
 } from '../lib/rails';
 import { aujourdhuiIso, decalerJours, jourLocal, formatDate, formatDateLongue } from '../lib/format';
 
@@ -102,6 +102,22 @@ const LIB_MAIL: Record<string, string> = {
   echec_envoi: 'mail jamais parti',
 };
 
+/**
+ * L'étiquette d'une étape. Un badge plutôt qu'un simple titre : c'est ce qui rend les
+ * blocs distinguables d'un coup d'œil quand on fait défiler plusieurs rails.
+ */
+function BadgeRail({ rail }: { rail: Rail | null }) {
+  return (
+    <span style={{
+      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
+      fontFamily: 'Lexend,sans-serif', fontSize: 12, fontWeight: 800,
+      background: rail ? 'var(--blue-faint)' : 'var(--st-neutre-bg)',
+      color: rail ? 'var(--blue)' : 'var(--muted)',
+      border: '1px solid ' + (rail ? 'var(--blue-mid)' : 'var(--border)'),
+    }}>{rail ? rail.libelle : 'hors étape'}</span>
+  );
+}
+
 /** Une phrase, pas trois pastilles : on lit une ligne pour comprendre pourquoi rien n'est passé. */
 function PourquoiRien({ r, rail }: { r: Relance; rail: Rail }) {
   const t = tentatives(r, rail);
@@ -178,6 +194,39 @@ export function ControleJournee({ relances, enPause, motifPause }: {
    * Les mélanger ferait afficher un chiffre alarmant qui ne décrit aucun manquement — et
    * un écran qui crie tous les jours cesse d'être lu.
    */
+  const [liste, setListe] = useState<'sans-contact' | 'declare'>('sans-contact');
+
+  /**
+   * LES PATIENTES QUI DISENT AVOIR ENVOYÉ LEUR ORDONNANCE, et que personne n'a encore
+   * vérifiées.
+   *
+   * ⚠️⚠️ CETTE LISTE N’EST PAS BORNÉE À LA JOURNÉE, et c’est délibéré (arbitrage client
+   * du 2026-09-17). Le drapeau est COLLANT : seul le bouton « Vérifié » de l’onglet
+   * Relances le lève. Une patiente signalée lundi et jamais vérifiée doit donc rester
+   * visible vendredi — c’est une file d’attente, pas un événement du jour.
+   *
+   * ⚠️ On écarte celles dont l’ordonnance est ARRIVÉE (`estSortie`) : leur déclaration
+   * est confirmée par ORTHOP, il n’y a plus rien à vérifier. Les autres restent, y
+   * compris les couvertes — leur situation est affichée en clair plutôt que devinée.
+   *
+   * ⚠️ Groupé par `railAtteint` (la dernière étape DÉPASSÉE) et non `railDeRelance`
+   * (« a-t-elle un rendez-vous aujourd’hui ») : ces patientes sont réparties partout
+   * dans le parcours, pas sur l’étape du jour.
+   */
+  const declares = useMemo(() => {
+    const lg = relances.filter(r => r.ordonnance_deja_envoyee && !estSortie(r));
+    const m = new Map<string, { rail: Rail | null; lignes: Relance[] }>();
+    for (const r of lg) {
+      const rail = railAtteint(r, jour);
+      const cle = rail ? rail.code : '—';
+      const g = m.get(cle) ?? { rail, lignes: [] };
+      g.lignes.push(r);
+      m.set(cle, g);
+    }
+    // Les étapes les plus avancées en premier : ce sont les déclarations les plus vieilles.
+    return { total: lg.length, groupes: [...m.values()].sort((a, b) => (b.rail?.jour ?? 0) - (a.rail?.jour ?? 0)) };
+  }, [relances, jour]);
+
   const enService = parEtape.filter(e => e.rail.actif);
   const aVenir = parEtape.filter(e => !e.rail.actif && e.surEtape > 0);
   const totalDu = enService.reduce((n, e) => n + e.surEtape, 0);
@@ -321,16 +370,50 @@ export function ControleJournee({ relances, enPause, motifPause }: {
         )}
       </div>
 
-      {/* ── Qui, nommément ─────────────────────────────────────────────────── */}
-      {totalManques > 0 && (
+      {/* ── Les deux listes, en petits onglets ─────────────────────────────── */}
+      {/* ⚠️ Les onglets portent sur les DEUX LISTES, pas sur les rails : ceux-ci restent des
+          blocs empilés, visibles d'un seul coup d'œil. Avec 0 à 4 patientes par étape,
+          masquer le J+7 derrière un onglet coûterait un clic pour apprendre qu'il va bien. */}
+      <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 11, padding: 3, gap: 2, marginBottom: 'var(--sp-3)' }}>
+        {([
+          { id: 'sans-contact' as const, label: 'Sans aucun contact', n: totalManques },
+          { id: 'declare' as const, label: 'Disent avoir envoyé', n: declares.total },
+        ]).map(o => {
+          const actif = liste === o.id;
+          return (
+            <button key={o.id} onClick={() => setListe(o.id)} style={{
+              padding: '6px 15px', border: 'none', borderRadius: 9, cursor: 'pointer',
+              fontFamily: 'Lexend,sans-serif', fontSize: 12.5, fontWeight: actif ? 800 : 600,
+              background: actif ? 'white' : 'transparent',
+              color: actif ? 'var(--blue)' : 'var(--muted)',
+              boxShadow: actif ? '0 1px 4px rgba(0,0,0,.1)' : 'none',
+              display: 'flex', alignItems: 'center', gap: 7,
+            }}>
+              {o.label}
+              <span style={{
+                padding: '1px 7px', borderRadius: 999, fontSize: 11, fontWeight: 800,
+                background: o.n > 0 ? 'var(--st-attente-bg)' : 'var(--st-ok-bg)',
+                color: o.n > 0 ? 'var(--st-attente-fg)' : 'var(--st-ok-fg)',
+              }}>{o.n}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Liste 1 : personne ne les a jointes ────────────────────────────── */}
+      {liste === 'sans-contact' && (totalManques === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
+          Personne n’est resté sans contact sur les étapes en service ce jour-là.
+        </p>
+      ) : (
         <>
-          <h3 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 13, fontWeight: 800, color: 'var(--text)', margin: '0 0 10px' }}>
-            Les patientes que personne n’a jointes
-          </h3>
           {enService.filter(e => e.manques.length > 0).map(e => (
             <div key={e.rail.code} style={{ marginBottom: 'var(--sp-4)' }}>
-              <p style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text)', margin: '0 0 6px' }}>
-                {e.rail.libelle} — {e.manques.length} patiente{e.manques.length > 1 ? 's' : ''}
+              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px' }}>
+                <BadgeRail rail={e.rail} />
+                <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                  {e.manques.length} patiente{e.manques.length > 1 ? 's' : ''} sur {e.surEtape} attendues
+                </span>
               </p>
               <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'Dernier appel', 'Ce qui a été tenté']}>
                 {e.manques.map(r => (
@@ -360,7 +443,70 @@ export function ControleJournee({ relances, enPause, motifPause }: {
             </div>
           ))}
         </>
-      )}
+      ))}
+
+      {/* ── Liste 2 : elles disent avoir envoyé leur ordonnance ────────────── */}
+      {liste === 'declare' && (declares.total === 0 ? (
+        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
+          Aucune déclaration en attente de vérification.
+        </p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
+                        background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 'var(--r-lg)',
+                        marginBottom: 'var(--sp-3)' }}>
+            <MessageSquareWarning size={16} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
+            <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
+              Ces patientes ont dit, pendant un appel, avoir déjà envoyé leur ordonnance.
+              <strong> Cette liste n’est pas limitée à la journée choisie</strong> : elle reste
+              affichée tant que personne n’a vérifié. La vérification se fait depuis l’onglet
+              « Relances », avec le bouton « Vérifié ».
+            </p>
+          </div>
+          {declares.groupes.map(g => (
+            <div key={g.rail ? g.rail.code : 'hors'} style={{ marginBottom: 'var(--sp-4)' }}>
+              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px' }}>
+                <BadgeRail rail={g.rail} />
+                <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
+                  {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''} — étape atteinte
+                </span>
+              </p>
+              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit']}>
+                {g.lignes.map(r => (
+                  <tr key={r.id}>
+                    <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                      {[r.nom, r.prenom].filter(Boolean).join(' ') || '—'}
+                    </td>
+                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>{r.telephone || '—'}</td>
+                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
+                      {r.date_echeance ? formatDate(decalerJours(r.date_echeance, -1)) : '—'}
+                    </td>
+                    {/* Le drapeau n'a pas de date propre : il est posé par le post-call, donc
+                        la date de l'appel qui l'a déclenché est la meilleure approximation. */}
+                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
+                      {r.dernier_appel ? formatDate(jourLocal(r.dernier_appel)) : '—'}
+                    </td>
+                    {/* ⚠️ LE RECOUPEMENT, et c'est l'information utile : la déclaration vient
+                        d'un modèle qui interprète un transcript, ORTHOP est la preuve. « Elle
+                        avait raison » et « ORTHOP la réclame toujours » n'appellent pas du
+                        tout la même suite. */}
+                    <td style={tdStyle}>
+                      {couverteAujourdhui(r, jour)
+                        ? <span style={{ color: '#15803d', fontWeight: 700 }}>
+                            ordonnance enregistrée — couverte jusqu’au{' '}
+                            {formatDate(String(r.fin_application).slice(0, 10))}
+                          </span>
+                        : <span style={{ color: 'var(--muted)' }}>
+                            ORTHOP la réclame toujours — à vérifier
+                          </span>}
+                    </td>
+                  </tr>
+                ))}
+              </DataTable>
+            </div>
+          ))}
+        </>
+      ))}
 
       <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '18px 2px 0', lineHeight: 1.6 }}>
         Cet écran ne déclenche rien : il se contente de lire. Les chiffres reflètent l’état
