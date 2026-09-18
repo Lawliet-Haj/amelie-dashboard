@@ -88,6 +88,27 @@ export function decalerJours(iso: string, jours: number): string {
 }
 
 /**
+ * Le jour de la semaine d'une date ISO, a la facon ISO-8601 : lundi = 1 ... dimanche = 7.
+ *
+ * Sert a la regle « le week-end est reporte au lundi » du recouvrement : plus aucun appel
+ * samedi ni dimanche, et le lundi chaque etape couvre TROIS jours d'echeance.
+ *
+ * ⚠️ Passe par MIDI UTC, comme `decalerJours` et `ecartJours` juste au-dessus. A minuit,
+ * une heure de decalage suffit a changer le jour de la semaine — et une regle qui se
+ * trompe de jour ferait appeler un dimanche.
+ *
+ * ⚠️ Doit rester d'accord avec `EXTRACT(ISODOW FROM CURRENT_DATE) = 1` cote n8n
+ * (`PG Cibles Appels`, `PG Bilan Jour`, `PG Cibles J7`, `PG Bilan J7`). ISODOW numerote
+ * comme ici ; `DOW`, lui, met dimanche a 0 — ne pas melanger les deux.
+ */
+export function jourSemaineIso(iso: string): number {
+  const d = new Date(String(iso).slice(0, 10) + 'T12:00:00Z');
+  if (Number.isNaN(d.getTime())) return NaN;
+  const n = d.getUTCDay();                 // 0 = dimanche ... 6 = samedi
+  return n === 0 ? 7 : n;
+}
+
+/**
  * Nombre de jours calendaires entre deux dates ISO (`b - a`). Negatif si `b` precede `a`.
  *
  * Sert a situer une relance dans le parcours : `ecartJours(date_echeance, aujourdhui)`

@@ -6,7 +6,7 @@ import {
   RAILS_RELANCES, lignesDuRail, jointVoixDansLeRail, jointParEcritDansLeRail,
   ecartEcheance, railAtteint, estSortie, couverteAujourdhui, type Rail,
 } from '../lib/rails';
-import { aujourdhuiIso, decalerJours, jourLocal, formatDate, formatDateLongue } from '../lib/format';
+import { aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue } from '../lib/format';
 
 /**
  * La fenêtre pendant laquelle les automates travaillent, heure de Paris.
@@ -252,6 +252,19 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
   const totalManques = enService.reduce((n, e) => n + e.manques.length, 0);
   const totalJamaisTente = enService.reduce((n, e) => n + e.jamaisTente, 0);
 
+  /**
+   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18).
+   *
+   * Les crons d'appel ne tournent plus que du lundi au vendredi, et la cohorte du samedi
+   * et du dimanche est reprise le lundi. Un samedi affiché sans ce repère montre donc
+   * TOUTE sa cohorte en « sans aucun contact » et envoie chercher une panne là où il y a
+   * une règle — exactement ce que font déjà la pause et l'heure trop matinale.
+   *
+   * On ne masque rien : la population reste affichée, seul le VERDICT cesse d'alerter.
+   */
+  const estWeekEnd = jourSemaineIso(jour) >= 6;
+  const alerte = totalManques > 0 && !estWeekEnd;
+
   const boutonJour = (val: string, texte: string) => (
     <button
       onClick={() => setJour(val)}
@@ -301,8 +314,21 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
         </a>
       </div>
 
-      {/* ⚠️ Deux raisons parfaitement NORMALES de ne voir personne de joint. Les taire
-          ferait passer une décision, ou une heure trop matinale, pour une panne. */}
+      {/* ⚠️ TROIS raisons parfaitement NORMALES de ne voir personne de joint. Les taire
+          ferait passer une décision, un week-end, ou une heure trop matinale, pour une panne. */}
+      {estWeekEnd && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
+                      background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
+                      marginBottom: 'var(--sp-3)' }}>
+          <CalendarDays size={16} style={{ color: 'var(--muted)', flexShrink: 0, marginTop: 1 }} />
+          <p style={{ fontSize: 12.5, color: 'var(--text)', margin: 0, lineHeight: 1.55 }}>
+            <strong>C’est le week-end — aucun appel n’est prévu.</strong> Depuis le 18/09, le
+            recouvrement ne sollicite personne le samedi ni le dimanche : ni appel, ni SMS, ni
+            mail. Les patientes ci-dessous sont bien attendues, mais elles seront traitées
+            <strong> lundi</strong>, avec la cohorte du lundi. Rien à signaler ici.
+          </p>
+        </div>
+      )}
       {enPause === true && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
                       background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 'var(--r-lg)',
@@ -332,24 +358,26 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
       <div style={{
         display: 'flex', alignItems: 'flex-start', gap: 12, padding: '16px 18px',
         borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-4)',
-        background: totalManques === 0 ? '#f0fdf4' : '#fffbeb',
-        border: '1px solid ' + (totalManques === 0 ? '#86efac' : '#fde68a'),
+        background: alerte ? '#fffbeb' : '#f0fdf4',
+        border: '1px solid ' + (alerte ? '#fde68a' : '#86efac'),
       }}>
-        {totalManques === 0
-          ? <CheckCircle size={20} style={{ color: '#15803d', flexShrink: 0, marginTop: 1 }} />
-          : <AlertTriangle size={20} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />}
+        {alerte
+          ? <AlertTriangle size={20} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
+          : <CheckCircle size={20} style={{ color: '#15803d', flexShrink: 0, marginTop: 1 }} />}
         <div>
           <p style={{
             margin: 0, fontFamily: 'Lexend,sans-serif', fontSize: 15, fontWeight: 800,
-            color: totalManques === 0 ? '#15803d' : '#92400e',
+            color: alerte ? '#92400e' : '#15803d',
           }}>
             {totalDu === 0
               ? 'Aucune étape ne tombait ce jour-là.'
-              : totalManques === 0
-                ? `Les ${totalDu} patientes attendues ont toutes été jointes.`
-                : `${totalManques} patiente${totalManques > 1 ? 's' : ''} sur ${totalDu} n’${totalManques > 1 ? 'ont' : 'a'} été jointe${totalManques > 1 ? 's' : ''} par personne.`}
+              : estWeekEnd
+                ? `${totalDu} patientes attendues — reportées à lundi.`
+                : totalManques === 0
+                  ? `Les ${totalDu} patientes attendues ont toutes été jointes.`
+                  : `${totalManques} patiente${totalManques > 1 ? 's' : ''} sur ${totalDu} n’${totalManques > 1 ? 'ont' : 'a'} été jointe${totalManques > 1 ? 's' : ''} par personne.`}
           </p>
-          <p style={{ margin: '5px 0 0', fontSize: 12.5, color: totalManques === 0 ? '#15803d' : '#92400e', lineHeight: 1.55 }}>
+          <p style={{ margin: '5px 0 0', fontSize: 12.5, color: alerte ? '#92400e' : '#15803d', lineHeight: 1.55 }}>
             {totalDu === 0
               ? 'Les étapes du parcours tombent à des jours précis : il est normal qu’une journée soit vide.'
               : <>

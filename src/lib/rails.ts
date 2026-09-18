@@ -35,7 +35,7 @@
  * cosmétique — mesuré le jour même, le rail J+1 compte **86** dossiers avec le bon écart
  * contre **10** sans.
  */
-import { aujourdhuiIso, decalerJours, ecartJours, isFixe, jourLocal } from './format';
+import { aujourdhuiIso, decalerJours, ecartJours, isFixe, jourLocal, jourSemaineIso } from './format';
 import type { Relance } from '../types';
 
 export type SourceRail = 'facturation' | 'relances';
@@ -259,21 +259,32 @@ export function ecartEcheance(rail: Rail): number {
 export function surLEtapeAujourdhui(
   rail: Rail, j: number, auj: string = aujourdhuiIso(),
 ): boolean {
-  // ⚠️⚠️ RATTRAPAGE DU 2026-09-16 — S’EFFACE TOUT SEUL LE LENDEMAIN.
-  // La pause a bloqué les appels du 14 au 16/09 : pour cette seule journée, les deux
-  // étapes en service couvrent TROIS jours d'échéance au lieu d'un — ici comme dans
-  // `PG Cibles Appels` et `PG Cibles J7`. L'écran et les crons doivent compter pareil.
+  const ecart = ecartEcheance(rail);
+
+  // ⚠️⚠️ LE WEEK-END EST REPORTÉ AU LUNDI (2026-09-18, demande du client).
+  // Plus aucun appel, SMS ni mail le samedi et le dimanche : le LUNDI, chaque étape
+  // couvre TROIS jours d'échéance — le sien, plus les deux qui ont été sautés. Le reste
+  // de la semaine, un seul jour comme avant.
   //
-  // ⚠️ La date est écrite EN DUR, et c'est voulu : un élargissement qu'il faudrait
-  // penser à retirer finirait par annuler la décision du 2026-09-09 (« les appels ne
-  // visent que la cohorte du jour ») par simple oubli, sans que personne le voie.
-  // Demain cette condition est fausse et la ligne suivante reprend seule.
+  // ⚠️⚠️ CETTE RÈGLE VIT À CINQ ENDROITS, à modifier ENSEMBLE — ici, et côté n8n dans
+  // `PG Cibles Appels`, `PG Bilan Jour` (cron J+1), `PG Cibles J7`, `PG Bilan J7`, sous
+  // la forme `EXTRACT(ISODOW FROM CURRENT_DATE) = 1`. Si l'écran et les crons cessent de
+  // compter pareil, la tuile annonce un chiffre que personne ne servira : c'est
+  // exactement le défaut constaté le 2026-09-16.
   //
-  // ⚠️ Les fenêtres des deux étapes restent DISJOINTES (R3 : 0-2, R4 : 6-8), ce qui
-  // est la condition pour que `railDeRelance()` puisse rendre une réponse unique.
-  const RATTRAPAGE_2026_09_16 = auj === '2026-09-16' && (rail.code === 'R3' || rail.code === 'R4');
-  if (RATTRAPAGE_2026_09_16) return j >= ecartEcheance(rail) && j <= ecartEcheance(rail) + 2;
-  return j === ecartEcheance(rail);
+  // ⚠️ Elle REMPLACE le rattrapage ponctuel du 16/09, qui s'était effacé tout seul comme
+  // prévu. On n'empile pas deux fenêtres : une seule règle, permanente.
+  //
+  // ⚠️ Les fenêtres des étapes restent DISJOINTES — R3 : 0-2, R4 : 6-8, R5 : 13-15,
+  // R6 : 20-22, R7 : 29-31, R8 : 32-34, R9 : 39-41. C'est la condition pour que
+  // `railDeRelance()` rende une réponse unique (son `find` prendrait sinon la première).
+  // Toute nouvelle étape doit vérifier cette disjonction.
+  //
+  // ⚠️ Le samedi et le dimanche, la cohorte du jour reste AFFICHÉE : on ne l'appelle pas,
+  // mais celui qui regarde ce samedi-là doit voir qui était attendu. C'est l'écran de
+  // contrôle qui dit que c'est le week-end, pas cette fonction qui efface la population.
+  if (jourSemaineIso(auj) === 1) return j >= ecart && j <= ecart + 2;
+  return j === ecart;
 }
 /**
  * Sur quelle étape du parcours cette relance tombe-t-elle AUJOURD'HUI ?
