@@ -12,7 +12,7 @@ import {
 // ⚠️ Le JUGEMENT vit dans `src/lib/controle.ts`, pas ici : c'est ce qui permet de
 // l'éprouver sur les vraies données sans charger React. Cette vue ne fait que DESSINER
 // ce qu'il rend — elle ne rejuge rien.
-import { bilanDossier, type Bilan, type ContexteJournee, type GraviteAction } from '../lib/controle';
+import { bilanDossier, parOrdreDAction, type Bilan, type ContexteJournee, type GraviteAction } from '../lib/controle';
 import {
   aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue,
 } from '../lib/format';
@@ -175,7 +175,13 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
    */
   const parEtape = useMemo(() => RAILS_RELANCES.map(rail => {
     const ctx: ContexteJournee = { estWeekEnd, enPause, journeeEnCours };
-    const bilans = lignesDuRail(relances, rail, 'jour', jour).map(r => bilanDossier(r, rail, jour, ctx));
+    // ⚠️ TRIÉ : ce qui demande une action remonte en tête. Sans cela, il faut faire
+    //    défiler 180 lignes pour trouver les trois qui appellent un geste. Le classement
+    //    vit dans `controle.ts`, avec les actions — il ne se déduit pas de la gravité.
+    //    ⚠️ Le tri ne change AUCUN compteur : les filtres et les pastilles opèrent sur la
+    //    même liste, l'ordre n'entre dans aucun total.
+    const bilans = parOrdreDAction(
+      lignesDuRail(relances, rail, 'jour', jour).map(r => bilanDossier(r, rail, jour, ctx)));
     return {
       rail,
       bilans,

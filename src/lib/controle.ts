@@ -255,6 +255,51 @@ export function actionDuDossier(
   };
 }
 
+/**
+ * ── L'ORDRE DES LIGNES : CE QU'IL Y A À FAIRE D'ABORD ─────────────────────────
+ *
+ * Sans ce classement, les lignes sortent dans l'ordre de la base : une journée de 180
+ * patientes oblige à la faire défiler en entier pour trouver les trois qui demandent
+ * quelque chose. Demande du client, 2026-09-21.
+ *
+ * ⚠️ L'ordre suit les CODES d'action, pas la gravité : « Vérifier » est rangé en tête
+ * alors que sa gravité est `attente`, parce que c'est **la seule chose que cet écran
+ * permette de faire**. Un tri sur la gravité l'aurait noyé au milieu des reprises
+ * automatiques, qui ne demandent rien.
+ *
+ * ⚠️ Un code absent de cette table prend le rang 99 : il descend en bas plutôt que de
+ * remonter par accident. Une action nouvelle qu'on aurait oublié de classer ne doit pas
+ * se retrouver en tête de la liste des choses à faire.
+ */
+const RANG_ACTION: Record<ActionDossier['code'], number> = {
+  verifier: 0,        // le seul geste possible ici
+  'rien-tente': 1,    // personne n'a rien essayé — le cas grave
+  quota: 2,           // 5 tentatives, le parcours ne la reprendra plus
+  'fin-parcours': 3,  // sortie sans avoir été jointe
+  'reprise-passee': 4,// un rendez-vous déjà passé, à contrôler sur sa journée
+  reprise: 5,         // le parcours s'en charge
+  'en-cours': 6,      // la journée n'est pas finie
+  pause: 7,
+  'week-end': 8,
+  jointe: 9,          // rien à faire
+};
+
+export function rangAction(b: Bilan): number {
+  const r = RANG_ACTION[b.action.code];
+  return r === undefined ? 99 : r;
+}
+
+/**
+ * Trie une journée : d'abord ce qui demande une action, ensuite le reste.
+ *
+ * ⚠️ `sort` de JavaScript est STABLE depuis ES2019 : à rang égal, l'ordre d'origine est
+ * conservé. On ne réinvente donc pas un second critère qui divergerait de celui de
+ * l'API — et deux lectures de la même journée donnent la même liste.
+ */
+export function parOrdreDAction(bilans: Bilan[]): Bilan[] {
+  return [...bilans].sort((a, b) => rangAction(a) - rangAction(b));
+}
+
 /** Un dossier vu à travers son étape : tout ce qu'une ligne du tableau affiche. */
 export interface Bilan {
   r: Relance;
