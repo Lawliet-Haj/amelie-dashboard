@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import type { AuthUser, Relance, RelancesStats, BatchGroup } from '../types';
 import { GroupedList, type GroupeEntete, type Ton, Chip, BoutonPause, Portal } from '../ui';
+import { TranscriptPanel } from '../ui';
 import {
   aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, formatDuration, isEcheancePassed, isFixe, jourLocal, normalizeEmail, normalizePhoneFr, parseFrDate, titleCaseName,
 } from '../lib/format';
@@ -264,19 +265,6 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
 
 function FixeBadge() {
   return <span title="Numéro fixe : ne peut pas recevoir de SMS" style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 8, background: '#f1f5f9', color: '#475569', border: '1px solid #cbd5e1', whiteSpace: 'nowrap' }}>📞 Fixe · pas de SMS</span>;
-}
-
-function parseTranscript(raw: string | null | undefined): { role: 'agent' | 'patient'; text: string }[] {
-  if (!raw) return [];
-  return raw.split('\n')
-    .filter(l => l.trim())
-    .map(l => {
-      const m = l.match(/^\[(Amélie|Agent)\]\s*(.*)/) || l.match(/^\[Patient\]\s*(.*)/);
-      if (!m) return null;
-      const isAgent = l.startsWith('[Amélie]') || l.startsWith('[Agent]');
-      return { role: (isAgent ? 'agent' : 'patient') as 'agent' | 'patient', text: (isAgent ? l.replace(/^\[Amélie\]\s*|\[Agent\]\s*/, '') : l.replace(/^\[Patient\]\s*/, '')).trim() };
-    })
-    .filter(Boolean) as { role: 'agent' | 'patient'; text: string }[];
 }
 
 function generateBatchId(): string {
@@ -918,52 +906,6 @@ function EditModal({ relance, token, onClose, onSaved }: { relance: Relance; tok
             {loading ? <RefreshCw size={14} style={{ animation: 'spin .8s linear infinite' }} /> : <CheckCircle size={14} />}
             {loading ? 'Enregistrement…' : 'Enregistrer'}
           </button>
-        </div>
-      </div>
-    </Portal>
-  );
-}
-
-// ─── Transcript Panel ─────────────────────────────────────────────────────────
-function TranscriptPanel({ relance, onClose }: { relance: Relance; onClose: () => void }) {
-  const messages = parseTranscript(relance.transcript);
-  const hasSentiment = relance.sentiment && SENTIMENT_CONFIG[relance.sentiment];
-  useEffect(() => {
-    const main = document.querySelector('main') as HTMLElement | null;
-    if (main) { main.style.overflow = 'hidden'; return () => { main.style.overflow = 'auto'; }; }
-  }, []);
-  return (
-    <Portal>
-      <div className="panel-overlay animate-fade-in" onClick={onClose} style={{ zIndex: 1000 }} />
-      <div style={{ position: 'fixed', top: 20, right: 16, maxHeight: '75vh', width: 460, background: 'white', zIndex: 1001, boxShadow: '0 8px 40px rgba(0,0,0,.18)', borderRadius: 16, display: 'flex', flexDirection: 'column', overflow: 'hidden', animation: 'slideInRight .25s ease' }}>
-        <div style={{ padding: '18px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-          <div>
-            <h3 style={{ fontFamily: 'Lexend,sans-serif', fontWeight: 800, fontSize: 15, color: 'var(--text)', margin: 0 }}>Transcript</h3>
-            <p style={{ fontSize: 11, color: 'var(--muted)', margin: '2px 0 0' }}>{relance.nom || relance.telephone} · {formatDateTime(relance.dernier_appel)} · {formatDuration(relance.duree_sec)}</p>
-          </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', display: 'flex' }}><X size={18} /></button>
-        </div>
-        {(hasSentiment || relance.resultat_ia) && (
-          <div style={{ padding: '10px 20px', borderBottom: '1px solid var(--border)', background: '#fafafa', display: 'flex', gap: 10, alignItems: 'center', flexShrink: 0 }}>
-            {hasSentiment && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 600, padding: '3px 10px', borderRadius: 12, background: SENTIMENT_CONFIG[relance.sentiment!].bg, color: SENTIMENT_CONFIG[relance.sentiment!].color }}>{SENTIMENT_CONFIG[relance.sentiment!].label}</span>}
-            {relance.resultat_ia && <span style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic' }}>{relance.resultat_ia}</span>}
-          </div>
-        )}
-        <div style={{ overflowY: 'auto', overscrollBehavior: 'contain', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {messages.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--muted)' }}>
-              <MessageSquare size={28} strokeWidth={1.5} style={{ opacity: .4, marginBottom: 8 }} />
-              <p style={{ fontSize: 13 }}>Transcript non disponible</p>
-              <p style={{ fontSize: 11, marginTop: 4 }}>L'analyse post-appel n'a pas encore été traitée.</p>
-            </div>
-          ) : messages.map((m, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: m.role === 'agent' ? 'flex-start' : 'flex-end' }}>
-              <div style={{ maxWidth: '80%', padding: '8px 12px', borderRadius: m.role === 'agent' ? '4px 14px 14px 14px' : '14px 4px 14px 14px', background: m.role === 'agent' ? '#eef2ff' : '#f0fdf4', color: 'var(--text)', fontSize: 13, lineHeight: 1.5 }}>
-                <span style={{ display: 'block', fontSize: 10, fontWeight: 700, color: m.role === 'agent' ? '#6366f1' : '#16a34a', marginBottom: 3, textTransform: 'uppercase', letterSpacing: '.5px' }}>{m.role === 'agent' ? 'Amélie' : 'Patient'}</span>
-                {m.text}
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </Portal>
@@ -2241,7 +2183,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     const cibles = sendCandidates;
     if (!cibles.length) return;
     setBulkSend({ total: cibles.length, done: 0, sms: 0, mail: 0, echecs: 0 });
-    let i = 0, sms = 0, mail = 0, echecs = 0, done = 0, horsRail = 0;
+    let i = 0, sms = 0, mail = 0, echecs = 0, done = 0, horsRail = 0, dejaParti = 0;
     const worker = async () => {
       while (i < cibles.length) {
         const r = cibles[i++];
@@ -2254,6 +2196,9 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
           // NI un envoi NI un echec. Le noyer dans l'un des deux rendrait le recapitulatif
           // faux dans un sens ou dans l'autre.
           if (res.mail === 'hors_rail') horsRail++;
+          // ⚠️ Un doublon refusé n'est NI un envoi NI un échec : c'est le garde-fou qui
+          // fonctionne. Le compter en échec ferait passer une protection pour une panne.
+          if (res.sms === 'deja_envoye' || res.mail === 'deja_envoye') dejaParti++;
           if (res.sms === 'echec_envoi' || res.mail === 'echec_envoi') echecs++;
         }
         done++;
@@ -2267,6 +2212,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       type: echecs ? 'error' : 'success',
       text: `${done} relance(s) traitée(s) : ${sms} SMS, ${mail} mail(s)`
         + (horsRail ? `, ${horsRail} mail(s) non envoyé(s) — retiré(s) du parcours à leur étape` : '')
+        + (dejaParti ? `, ${dejaParti} déjà servi(s) à cette étape` : '')
         + (echecs ? `, ${echecs} échec(s).` : '.'),
     });
     load();
@@ -2281,12 +2227,18 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     const parts: string[] = [];
     if (res.sms === 'envoye') parts.push('SMS envoyé');
     else if (res.sms === 'echec_envoi') parts.push('SMS refusé par Brevo');
+    // ⚠️⚠️ « UNE SEULE FOIS PAR ÉTAPE » (2026-09-21) : le serveur a refusé un doublon.
+    // Sans ce cas, `parts` restait VIDE et l'écran affichait « Nom : . » — exactement le
+    // piège déjà payé deux fois sur `MailChip` et `SmsChip`, dont le `switch` retombait
+    // sur « à envoyer » pour un état inconnu.
+    else if (res.sms === 'deja_envoye') parts.push('SMS déjà parti à cette étape');
     else if (res.sms === 'non_applicable') parts.push('pas de SMS (numéro fixe)');
     if (res.mail === 'envoye') parts.push('mail envoyé');
     else if (res.mail === 'echec_envoi') parts.push('mail refusé par Brevo');
     // ⚠️ Dire POURQUOI le mail n'est pas parti : « retiré du parcours » est une décision,
     // pas une panne. Sans cette phrase, l'absence de mail sur un J+7 passerait pour un bug.
     else if (res.mail === 'hors_rail') parts.push(`pas de mail (retiré du parcours à l’étape ${res.rail ? railParCode(res.rail)?.libelle ?? res.rail : 'atteinte'})`);
+    else if (res.mail === 'deja_envoye') parts.push('mail déjà parti à cette étape');
     else if (res.mail === 'non_applicable') parts.push('pas de mail (adresse absente)');
     const echec = res.sms === 'echec_envoi' || res.mail === 'echec_envoi';
     setCallMsg({ type: echec ? 'error' : 'success', text: `${r.prenom || ''} ${r.nom || ''}`.trim() + ' : ' + parts.join(', ') + '.' });

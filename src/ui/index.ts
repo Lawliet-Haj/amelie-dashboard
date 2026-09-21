@@ -16,3 +16,4 @@ export { SearchInput } from './SearchInput';
 export { CanalPuce } from './CanalPuce';
 export { BoutonPause } from './BoutonPause';
 export { Portal } from '../lib/Portal';
+export { TranscriptPanel, BoutonTranscript } from './TranscriptPanel';

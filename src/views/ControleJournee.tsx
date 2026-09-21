@@ -1,12 +1,21 @@
 import { useState, useMemo } from 'react';
-import { CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock, MessageSquareWarning, BookOpen } from 'lucide-react';
+import {
+  CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock,
+  MessageSquareWarning, BookOpen,
+} from 'lucide-react';
 import type { Relance } from '../types';
-import { Chip, DataTable, tdStyle, tdDiscret } from '../ui';
+import { Chip, DataTable, tdStyle, tdDiscret, TranscriptPanel, BoutonTranscript } from '../ui';
 import {
   RAILS_RELANCES, lignesDuRail, jointVoixDansLeRail, jointParEcritDansLeRail,
-  ecartEcheance, railAtteint, estSortie, couverteAujourdhui, type Rail,
+  railAtteint, estSortie, couverteAujourdhui, PLAFOND_TENTATIVES, type Rail,
 } from '../lib/rails';
-import { aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue } from '../lib/format';
+// ⚠️ Le JUGEMENT vit dans `src/lib/controle.ts`, pas ici : c'est ce qui permet de
+// l'éprouver sur les vraies données sans charger React. Cette vue ne fait que DESSINER
+// ce qu'il rend — elle ne rejuge rien.
+import { bilanDossier, type Bilan, type ContexteJournee, type GraviteAction } from '../lib/controle';
+import {
+  aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue,
+} from '../lib/format';
 
 /**
  * La fenêtre pendant laquelle les automates travaillent, heure de Paris.
@@ -24,89 +33,38 @@ function hhmmParis(): number {
 }
 
 /**
- * CONTRÔLER UNE JOURNÉE — écran de LECTURE SEULE.
+ * CONTRÔLER UNE JOURNÉE — l'écran de vérification du recouvrement.
  *
- * Il répond à une seule question : **parmi les patientes qui avaient un rendez-vous ce
- * jour-là, lesquelles n'ont été jointes par personne ?**
+ * ⚠️⚠️ IL MONTRE TOUTE LA JOURNÉE, PAS SEULEMENT LES MANQUANTS (2026-09-21).
+ * Demande du client : « sur contrôle on devrait plutôt montrer tout ceux qui ont été
+ * appelés, mais il faudrait distinguer les cas qu'on n'a vraiment pas pu contacter, et
+ * qu'on puisse voir quelle action réaliser et ce qui a déjà été fait. »
  *
- * ⚠️⚠️ AUCUNE ACTION SORTANTE ICI — rien qui atteigne une patiente. Demande du
- * client (2026-09-17) : « ils n'auront pas besoin de lancer des appels ou d'envoyer des
- * SMS, ils vont juste contrôler ce qui s'est passé ». L'onglet « Relances » porte déjà
- * tout l'outillage d'action ; le mélanger avec un contrôle oblige à lire un écran chargé
- * pour répondre à une question simple, et met un bouton « Appeler » sous la main de
- * quelqu'un qui n'est venu que vérifier.
+ * La version précédente n'affichait QUE les patientes sans aucun contact. Elle répondait
+ * donc à « qu'est-ce qui a raté ? » et à rien d'autre : impossible de voir le travail
+ * fait, impossible de vérifier qu'une patiente jointe l'avait bien été, et une journée
+ * parfaite affichait une page vide qui ne prouvait rien. L'écran porte maintenant **une
+ * ligne par patiente attendue**, et chaque ligne répond aux trois questions du client :
  *
- * ⚠️ UNE SEULE EXCEPTION, ajoutée le même jour à la demande du client après essai : le
- * bouton « Vérifié » de la liste des déclarations. Il ne contacte personne — il lève un
- * drapeau — et c'est exactement la suite que cette liste appelle : elle existe pour
- * rendre ces déclarations visibles, et la seule chose à en faire est de les marquer
- * contrôlées. Obliger à retrouver la même patiente dans « Relances » était une friction,
- * pas une protection.
+ *   1. où en est-elle       → la colonne « État » — rouge = action requise, vert = traitée
+ *   2. ce qui a été fait    → les trois canaux, datés DANS LE RAIL
+ *   3. quoi faire ensuite   → la colonne « Action à réaliser »
  *
- * ==> La ligne à tenir n'est donc pas « aucun bouton » mais AUCUN CONTACT SORTANT. Un
- * bouton qui appelle, envoie un SMS ou un mail n'a rien à faire ici.
+ * ⚠️⚠️ AUCUN CONTACT SORTANT ICI — rien qui atteigne une patiente. Demande du client
+ * (2026-09-17) : « ils n'auront pas besoin de lancer des appels ou d'envoyer des SMS, ils
+ * vont juste contrôler ce qui s'est passé ». L'onglet « Relances » porte déjà tout
+ * l'outillage d'action ; le mélanger avec un contrôle oblige à lire un écran chargé pour
+ * répondre à une question simple, et met un bouton « Appeler » sous la main de quelqu'un
+ * qui n'est venu que vérifier.
+ *
+ * ⚠️⚠️ UN SEUL LIBELLÉ CLIQUABLE, ET C'EST « VÉRIFIER » — arbitré par le client le
+ * 2026-09-21 : « le libellé cliquable doit juste être vérifier, pour le reste je ne vois
+ * pas ce qu'il y aurait à faire ». Tout le reste de la colonne « Action » est du TEXTE :
+ * ce sont des consignes, pas des commandes. « Vérifier » ne contacte personne — il lève
+ * un drapeau — et c'est la seule suite que cet écran puisse donner lui-même.
  */
-
-/**
- * « Jointe » veut dire QUELQUE CHOSE LUI EST PARVENU, pas qu'on a essayé.
- *
- * ⚠️ C'est la définition arbitrée par le client le 2026-09-17, et elle se lit AU RAIL :
- * une patiente jointe la semaine dernière, à l'étape précédente, compte comme non jointe
- * sur celle-ci — c'est la raison d'être d'une nouvelle étape. Voir `jointVoixDansLeRail`
- * et `jointParEcritDansLeRail`, qui comparent tout à la date d'entrée dans le rail.
- */
-function sansAucunContact(r: Relance, rail: Rail, jour: string): boolean {
-  return !jointVoixDansLeRail(r, rail, jour) && !jointParEcritDansLeRail(r, rail, jour);
-}
-
-/**
- * Ce qui a été TENTÉ depuis l'entrée dans ce rail — à ne pas confondre avec ce qui a abouti.
- *
- * ⚠️ Les trois canaux se datent différemment (`dernier_appel`, `sms_le`, `email_le`) et se
- * comparent tous à la date d'entrée dans le rail : un SMS livré la semaine dernière, à
- * l'étape précédente, n'est pas une tentative de CETTE étape.
- *
- * 👉 Les trois à `false` = **on n'a rien tenté du tout**. C'est le cas grave : ce n'est pas
- * une patiente injoignable, c'est une patiente oubliée — module en pause, n8n à terre, ou
- * cohorte jamais reprise.
- */
-function tentatives(r: Relance, rail: Rail) {
-  const entree = r.date_echeance ? decalerJours(r.date_echeance, ecartEcheance(rail)) : null;
-  const depuis = (ts?: string | null) => {
-    if (!entree || !ts) return false;
-    const j = jourLocal(ts);
-    return Boolean(j) && j! >= entree;
-  };
-  const appel = depuis(r.dernier_appel);
-  const sms = Boolean(r.sms_statut) && depuis(r.sms_le);
-  const mail = Boolean(r.email_statut) && depuis(r.email_le);
-  return { appel, sms, mail, rien: !appel && !sms && !mail };
-}
-
-/**
- * Les états d'acheminement, EN FRANÇAIS.
- *
- * ⚠️ Les valeurs brutes de la base (« echec_envoi », « envoye ») n’ont rien à faire sous
- * les yeux d’une conseillère : le reste du dashboard les traduit partout ailleurs.
- *
- * ⚠️ « livre », « ouvert » et « clique » ne devraient JAMAIS apparaître ici — une patiente
- * dont un écrit a abouti dans ce rail n’est pas « sans aucun contact » et ne figure donc
- * pas dans la liste. Ils sont traduits quand même : si l’un d’eux s’affichait, ce serait
- * le signe que les deux définitions ont divergé, et mieux vaut le LIRE que le deviner.
- */
-const LIB_SMS: Record<string, string> = {
-  livre: 'SMS livré',
-  envoye: 'SMS envoyé, livraison non confirmée',
-  echec: 'SMS non livré',
-  echec_envoi: 'SMS jamais parti',
-};
-const LIB_MAIL: Record<string, string> = {
-  clique: 'mail cliqué',
-  ouvert: 'mail ouvert',
-  livre: 'mail livré',
-  envoye: 'mail envoyé, livraison non confirmée',
-  echec: 'mail non livré',
-  echec_envoi: 'mail jamais parti',
+const COULEUR_ACTION: Record<GraviteAction, string> = {
+  ok: '#15803d', attente: '#92400e', alerte: '#b91c1c', neutre: 'var(--muted)',
 };
 
 /**
@@ -125,34 +83,32 @@ function BadgeRail({ rail }: { rail: Rail | null }) {
   );
 }
 
-/** Une phrase, pas trois pastilles : on lit une ligne pour comprendre pourquoi rien n'est passé. */
-function PourquoiRien({ r, rail }: { r: Relance; rail: Rail }) {
-  const t = tentatives(r, rail);
-  if (t.rien) {
-    return (
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#b91c1c', fontWeight: 700 }}>
-        <PhoneOff size={12} />
-        Rien n’a été tenté
-      </span>
-    );
+/**
+ * ROUGE = action requise · VERT = traitée. La lecture demandée par le client.
+ *
+ * ⚠️⚠️ ELLE SE TAIT QUAND LE CONTEXTE EXPLIQUE TOUT. Un week-end, une pause, ou une
+ * journée qui n'a pas encore atteint 12h30 : la patiente n'a rien reçu, et c'est
+ * parfaitement normal. La peindre en rouge à 8h du matin ferait hurler l'écran TOUS LES
+ * JOURS — et cet onglet est la vue par défaut du Recouvrement, donc c'est la première
+ * chose que l'équipe verrait chaque matin. C'est la règle déjà posée pour les étapes sans
+ * automate : un écran qui crie tous les jours cesse d'être lu.
+ *
+ * ⚠️ Le juge est `action.gravite`, pas une seconde lecture du contexte : les trois cas
+ * neutres sont exactement ceux que l'escalier de `actionDuDossier` range en `neutre`. Deux
+ * façons de répondre à la même question finiraient par diverger.
+ */
+function PastilleEtat({ b }: { b: Bilan }) {
+  if (b.jointe) return <Chip texte="Jointe" ton="ok" titre="Quelque chose lui est parvenu à cette étape" />;
+  if (b.action.gravite === 'neutre') {
+    return <Chip texte="En attente" ton="neutre" titre={b.action.texte} />;
   }
-  const bouts: string[] = [];
-  if (t.appel) {
-    // ⚠️ Un statut resté sur « À appeler » APRÈS un appel n'est pas une contradiction : le
-    // lancement a été refusé (limite CPS du tronc SIP) ou le post-call n’a pas tourné. Le
-    // recopier tel quel donne « appelée (À appeler) », qui ne veut rien dire pour la
-    // lectrice — alors que c'est justement un cas qu'un contrôle doit faire remonter.
-    if (r.statut === 'Non répondu') bouts.push('appelée, sans réponse');
-    else if (r.statut === 'À appeler') {
-      bouts.push(r.echec_motif
-        ? `appel non abouti (${String(r.echec_motif).toLowerCase()})`
-        : 'appel lancé, aucun résultat enregistré');
-    } else bouts.push(`appelée — ${String(r.statut ?? '').toLowerCase()}`);
+  if (b.rienTente) {
+    return <Chip texte="Rien tenté" ton="echec" titre="Ni appel, ni SMS, ni mail depuis l’entrée dans cette étape" />;
   }
-  if (t.sms) bouts.push(LIB_SMS[String(r.sms_statut)] ?? `SMS : ${r.sms_statut}`);
-  if (t.mail) bouts.push(LIB_MAIL[String(r.email_statut)] ?? `mail : ${r.email_statut}`);
-  return <span style={{ color: 'var(--muted)' }}>{bouts.join(' · ')}</span>;
+  return <Chip texte="Sans contact" ton="attente" titre="On a essayé, mais rien ne lui est parvenu" />;
 }
+
+type FiltreJournee = 'tout' | 'jointes' | 'sans-contact' | 'rien-tente';
 
 export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
   relances: Relance[];
@@ -169,60 +125,77 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
    * Lève le drapeau « dit avoir envoyé » sur un dossier.
    *
    * ⚠️ Fourni PAR LE PARENT (`markOrdoVerified` de RecouvrementView), qui porte déjà
-   * l'appel à W-Update-Relance et met à jour sa propre liste — la ligne disparaît donc
-   * d'elle-même. Réécrire le fetch ici en aurait fait une seconde copie, vouée à
-   * diverger.
+   * l'appel à W-Update-Relance et met à jour sa propre liste — la ligne se met donc à jour
+   * d'elle-même. Réécrire le fetch ici en aurait fait une seconde copie, vouée à diverger.
    */
   onVerifie?: (r: Relance) => Promise<void>;
 }) {
   // Le dossier dont la vérification est en cours : le bouton se verrouille le temps
   // de l'aller-retour, sinon un double clic part deux fois.
   const [verifEnCours, setVerifEnCours] = useState<number | null>(null);
+  /**
+   * Le dossier dont on lit le transcript.
+   *
+   * ⚠️ LIRE N'EST PAS CONTACTER : le panneau n'appelle personne, n'envoie rien, et
+   * n'écrit pas en base. Il ne contredit donc pas la doctrine de cet écran — c'est même
+   * ce qui la rend tenable, puisqu'on peut enfin juger une ligne sans aller la chercher
+   * dans la console de travail.
+   */
+  const [transcrit, setTranscrit] = useState<Relance | null>(null);
   const ajd = aujourdhuiIso();
   const [jour, setJour] = useState(ajd);
   const hier = decalerJours(ajd, -1);
+  const [liste, setListe] = useState<'journee' | 'declare'>('journee');
+  const [filtre, setFiltre] = useState<FiltreJournee>('tout');
 
   /**
-   * Un calcul par étape, pour la journée choisie.
+   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18).
+   *
+   * Les crons d'appel ne tournent plus que du lundi au vendredi, et la cohorte du samedi
+   * et du dimanche est reprise le lundi. Un samedi affiché sans ce repère montre donc
+   * TOUTE sa cohorte en « sans aucun contact » et envoie chercher une panne là où il y a
+   * une règle — exactement ce que font déjà la pause et l'heure trop matinale.
+   *
+   * On ne masque rien : la population reste affichée, seul le VERDICT cesse d'alerter.
+   */
+  const estWeekEnd = jourSemaineIso(jour) >= 6;
+  const journeeEnCours = jour === ajd && hhmmParis() < FIN_FENETRE_HHMM;
+
+  /**
+   * Un bilan par patiente, groupé par étape, pour la journée choisie.
    *
    * ⚠️ `lignesDuRail` porte déjà les deux exclusions qui comptent : les ordonnances REÇUES
    * et les patientes COUVERTES par une ordonnance en cours. On ne contrôle donc que les
    * dossiers pour lesquels un contact était réellement dû ce jour-là.
    *
    * ⚠️ Toutes les fonctions prennent `jour` en paramètre — c'est ce qui rend l'écran
-   * capable de regarder hier. Aucune date n'est recalculée ici : une copie de plus de
-   * `ecartEcheance()` et les chiffres divergeraient du reste du dashboard.
+   * capable de regarder hier. Aucune date n'est recalculée ici.
    */
   const parEtape = useMemo(() => RAILS_RELANCES.map(rail => {
-    const surEtape = lignesDuRail(relances, rail, 'jour', jour);
-    const manques = surEtape.filter(r => sansAucunContact(r, rail, jour));
+    const ctx: ContexteJournee = { estWeekEnd, enPause, journeeEnCours };
+    const bilans = lignesDuRail(relances, rail, 'jour', jour).map(r => bilanDossier(r, rail, jour, ctx));
     return {
       rail,
-      surEtape: surEtape.length,
-      voix: surEtape.filter(r => jointVoixDansLeRail(r, rail, jour)).length,
-      ecrit: surEtape.filter(r => jointParEcritDansLeRail(r, rail, jour)).length,
-      manques,
+      bilans,
+      surEtape: bilans.length,
+      jointes: bilans.filter(b => b.jointe).length,
+      voix: bilans.filter(b => jointVoixDansLeRail(b.r, rail, jour)).length,
+      ecrit: bilans.filter(b => jointParEcritDansLeRail(b.r, rail, jour)).length,
+      manques: bilans.filter(b => !b.jointe).length,
       // Le sous-ensemble alarmant : personne n'a rien tenté, sur aucun canal.
-      jamaisTente: manques.filter(r => tentatives(r, rail).rien).length,
+      jamaisTente: bilans.filter(b => !b.jointe && b.rienTente).length,
     };
-  }), [relances, jour]);
-
-  /**
-   * ⚠️⚠️ LE VERDICT NE COMPTE QUE LES ÉTAPES EN SERVICE. Les étapes J+14 et au-delà n'ont
-   * ni agent ni cron : *tous* leurs dossiers sont « sans aucun contact » par construction.
-   * Les mélanger ferait afficher un chiffre alarmant qui ne décrit aucun manquement — et
-   * un écran qui crie tous les jours cesse d'être lu.
-   */
-  const [liste, setListe] = useState<'sans-contact' | 'declare'>('sans-contact');
+  }), [relances, jour, estWeekEnd, enPause, journeeEnCours]);
 
   /**
    * LES PATIENTES QUI DISENT AVOIR ENVOYÉ LEUR ORDONNANCE, et que personne n'a encore
    * vérifiées.
    *
    * ⚠️⚠️ CETTE LISTE N’EST PAS BORNÉE À LA JOURNÉE, et c’est délibéré (arbitrage client
-   * du 2026-09-17). Le drapeau est COLLANT : seul le bouton « Vérifié » de l’onglet
-   * Relances le lève. Une patiente signalée lundi et jamais vérifiée doit donc rester
-   * visible vendredi — c’est une file d’attente, pas un événement du jour.
+   * du 2026-09-17, reconfirmé le 21/09 : « la journée seule + disent avoir envoyé »). Le
+   * drapeau est COLLANT : seul le bouton « Vérifier » le lève. Une patiente signalée lundi
+   * et jamais vérifiée doit donc rester visible vendredi — c’est une file d’attente, pas
+   * un événement du jour.
    *
    * ⚠️ On écarte celles dont l’ordonnance est ARRIVÉE (`estSortie`) : leur déclaration
    * est confirmée par ORTHOP, il n’y a plus rien à vérifier. Les autres restent, y
@@ -246,24 +219,51 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
     return { total: lg.length, groupes: [...m.values()].sort((a, b) => (b.rail?.jour ?? 0) - (a.rail?.jour ?? 0)) };
   }, [relances, jour]);
 
+  /**
+   * ⚠️⚠️ LE VERDICT NE COMPTE QUE LES ÉTAPES EN SERVICE. Les étapes J+14 et au-delà n'ont
+   * ni agent ni cron : *tous* leurs dossiers sont « sans aucun contact » par construction.
+   * Les mélanger ferait afficher un chiffre alarmant qui ne décrit aucun manquement — et
+   * un écran qui crie tous les jours cesse d'être lu.
+   */
   const enService = parEtape.filter(e => e.rail.actif);
   const aVenir = parEtape.filter(e => !e.rail.actif && e.surEtape > 0);
   const totalDu = enService.reduce((n, e) => n + e.surEtape, 0);
-  const totalManques = enService.reduce((n, e) => n + e.manques.length, 0);
+  const totalJointes = enService.reduce((n, e) => n + e.jointes, 0);
+  const totalManques = enService.reduce((n, e) => n + e.manques, 0);
   const totalJamaisTente = enService.reduce((n, e) => n + e.jamaisTente, 0);
-
   /**
-   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18).
+   * ⚠️⚠️ TROIS RAISONS PARFAITEMENT NORMALES DE N'AVOIR JOINT PERSONNE, et aucune n'est un
+   * manquement : le week-end (tout est reporté à lundi), une pause décidée, et une journée
+   * qui n'a pas encore atteint 12h30. Chacune a déjà son bandeau ; ce qu'il manquait, c'est
+   * qu'elles ÉTEIGNENT AUSSI L'ALARME.
    *
-   * Les crons d'appel ne tournent plus que du lundi au vendredi, et la cohorte du samedi
-   * et du dimanche est reprise le lundi. Un samedi affiché sans ce repère montre donc
-   * TOUTE sa cohorte en « sans aucun contact » et envoie chercher une panne là où il y a
-   * une règle — exactement ce que font déjà la pause et l'heure trop matinale.
-   *
-   * On ne masque rien : la population reste affichée, seul le VERDICT cesse d'alerter.
+   * Sans cela, l'écran vire à l'ambre chaque matin sur l'intégralité de sa cohorte — et
+   * comme c'est la vue par DÉFAUT du Recouvrement, c'est la première chose que l'équipe
+   * verrait en arrivant, tous les jours. Une alerte qui se déclenche tous les jours n'est
+   * plus une alerte : c'est la règle déjà appliquée aux étapes sans automate, et aux mails
+   * des crons (« seule la dernière tentative alerte »).
    */
-  const estWeekEnd = jourSemaineIso(jour) >= 6;
-  const alerte = totalManques > 0 && !estWeekEnd;
+  const contexteExplique = estWeekEnd || enPause === true || journeeEnCours;
+  const alerte = totalManques > 0 && !contexteExplique;
+
+  /** Les quatre vues de la journée. Le compteur est celui du périmètre que le clic affichera. */
+  const VUES: { id: FiltreJournee; label: string; n: number; alerte: boolean }[] = [
+    { id: 'tout',         label: 'Toutes',        n: totalDu,          alerte: false },
+    { id: 'jointes',      label: 'Jointes',       n: totalJointes,     alerte: false },
+    { id: 'sans-contact', label: 'Sans contact',  n: totalManques,     alerte: !contexteExplique },
+    { id: 'rien-tente',   label: 'Rien tenté',    n: totalJamaisTente, alerte: !contexteExplique },
+  ];
+
+  const passeFiltre = (b: Bilan): boolean => {
+    if (filtre === 'jointes') return b.jointe;
+    if (filtre === 'sans-contact') return !b.jointe;
+    if (filtre === 'rien-tente') return !b.jointe && b.rienTente;
+    return true;
+  };
+  const etapesAffichees = enService
+    .map(e => ({ ...e, visibles: e.bilans.filter(passeFiltre) }))
+    .filter(e => e.visibles.length > 0);
+  const totalAffiche = etapesAffichees.reduce((n, e) => n + e.visibles.length, 0);
 
   const boutonJour = (val: string, texte: string) => (
     <button
@@ -276,6 +276,40 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
         color: jour === val ? 'white' : 'var(--text)',
       }}>{texte}</button>
   );
+
+  /**
+   * Le bouton « Vérifier » — LE SEUL LIBELLÉ CLIQUABLE DE CET ÉCRAN.
+   *
+   * ⚠️ Il ne contacte personne : il lève le drapeau déclaratif, donc la patiente redevient
+   * appelable par le parcours. C'est irréversible depuis ici — le drapeau ne se repose que
+   * lors d'un prochain appel où elle le redirait.
+   *
+   * ⚠️ Il se verrouille pendant l'aller-retour, sinon un double clic part deux fois.
+   */
+  const BoutonVerifier = ({ r }: { r: Relance }) => {
+    if (!onVerifie) return null;
+    const occupe = verifEnCours !== null;
+    return (
+      <button
+        onClick={async () => {
+          setVerifEnCours(r.id);
+          await onVerifie(r);
+          setVerifEnCours(null);
+        }}
+        disabled={occupe}
+        title="Contrôlez dans ORTHOP, puis cliquez : le signalement est retiré et la patiente revient dans le parcours"
+        style={{
+          padding: '4px 12px', borderRadius: 'var(--r-md)',
+          fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 700,
+          border: '1px solid ' + (occupe ? 'var(--border)' : '#a7f3d0'),
+          background: verifEnCours === r.id ? '#ecfdf5' : 'white',
+          color: occupe ? 'var(--muted)' : '#047857',
+          cursor: occupe ? 'not-allowed' : 'pointer',
+        }}>
+        {verifEnCours === r.id ? 'Enregistrement…' : 'Vérifier'}
+      </button>
+    );
+  };
 
   return (
     <div>
@@ -341,7 +375,7 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
           </p>
         </div>
       )}
-      {jour === ajd && hhmmParis() < FIN_FENETRE_HHMM && (
+      {journeeEnCours && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
                       background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
                       marginBottom: 'var(--sp-3)' }}>
@@ -369,13 +403,20 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
             margin: 0, fontFamily: 'Lexend,sans-serif', fontSize: 15, fontWeight: 800,
             color: alerte ? '#92400e' : '#15803d',
           }}>
+            {/* ⚠️ La phrase suit le CONTEXTE, pas seulement les chiffres. « 0 patiente jointe
+                sur 135 » est exact à 8h du matin, et c'est pourtant le pire résumé
+                possible : la journée n'a pas commencé. */}
             {totalDu === 0
               ? 'Aucune étape ne tombait ce jour-là.'
               : estWeekEnd
                 ? `${totalDu} patientes attendues — reportées à lundi.`
-                : totalManques === 0
-                  ? `Les ${totalDu} patientes attendues ont toutes été jointes.`
-                  : `${totalManques} patiente${totalManques > 1 ? 's' : ''} sur ${totalDu} n’${totalManques > 1 ? 'ont' : 'a'} été jointe${totalManques > 1 ? 's' : ''} par personne.`}
+                : enPause === true && totalJointes === 0
+                  ? `${totalDu} patientes attendues — le module est en pause.`
+                  : journeeEnCours && totalJointes === 0
+                    ? `${totalDu} patientes attendues aujourd’hui — les appels commencent à 12h30.`
+                    : totalManques === 0
+                      ? `Les ${totalDu} patientes attendues ont toutes été jointes.`
+                      : `${totalJointes} patiente${totalJointes > 1 ? 's' : ''} jointe${totalJointes > 1 ? 's' : ''} sur ${totalDu} — ${totalManques} sans aucun contact.`}
           </p>
           <p style={{ margin: '5px 0 0', fontSize: 12.5, color: alerte ? '#92400e' : '#15803d', lineHeight: 1.55 }}>
             {totalDu === 0
@@ -411,9 +452,9 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
               <td style={tdDiscret}>{e.voix}</td>
               <td style={tdDiscret}>{e.ecrit}</td>
               <td style={tdStyle}>
-                {e.manques.length === 0
+                {e.manques === 0
                   ? <Chip texte="0" ton="ok" />
-                  : <Chip texte={String(e.manques.length)} ton="attente" />}
+                  : <Chip texte={String(e.manques)} ton="attente" />}
               </td>
             </tr>
           ))}
@@ -432,11 +473,11 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
 
       {/* ── Les deux listes, en petits onglets ─────────────────────────────── */}
       {/* ⚠️ Les onglets portent sur les DEUX LISTES, pas sur les rails : ceux-ci restent des
-          blocs empilés, visibles d'un seul coup d'œil. Avec 0 à 4 patientes par étape,
-          masquer le J+7 derrière un onglet coûterait un clic pour apprendre qu'il va bien. */}
+          blocs empilés, visibles d'un seul coup d'œil. Périmètre arrêté avec le client le
+          2026-09-21 : « la journée seule + disent avoir envoyé ». */}
       <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 11, padding: 3, gap: 2, marginBottom: 'var(--sp-3)' }}>
         {([
-          { id: 'sans-contact' as const, label: 'Sans aucun contact', n: totalManques },
+          { id: 'journee' as const, label: 'La journée', n: totalDu },
           { id: 'declare' as const, label: 'Disent avoir envoyé', n: declares.total },
         ]).map(o => {
           const actif = liste === o.id;
@@ -452,51 +493,130 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
               {o.label}
               <span style={{
                 padding: '1px 7px', borderRadius: 999, fontSize: 11, fontWeight: 800,
-                background: o.n > 0 ? 'var(--st-attente-bg)' : 'var(--st-ok-bg)',
-                color: o.n > 0 ? 'var(--st-attente-fg)' : 'var(--st-ok-fg)',
+                background: o.n > 0 ? 'var(--st-neutre-bg)' : 'var(--st-ok-bg)',
+                color: o.n > 0 ? 'var(--muted)' : 'var(--st-ok-fg)',
               }}>{o.n}</span>
             </button>
           );
         })}
       </div>
 
-      {/* ── Liste 1 : personne ne les a jointes ────────────────────────────── */}
-      {liste === 'sans-contact' && (totalManques === 0 ? (
+      {/* ── Liste 1 : TOUTE la journée, une ligne par patiente ─────────────── */}
+      {liste === 'journee' && (totalDu === 0 ? (
         <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
-          Personne n’est resté sans contact sur les étapes en service ce jour-là.
+          Aucune patiente n’était attendue sur les étapes en service ce jour-là.
         </p>
       ) : (
         <>
-          {enService.filter(e => e.manques.length > 0).map(e => (
+          {/* Les quatre vues. ⚠️ Le compteur est celui du périmètre que le clic affichera —
+              une pastille qui annonce un nombre et ouvre un tableau différent est la panne
+              exacte relevée le 2026-09-16 sur les tuiles du Parcours. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 'var(--sp-3)' }}>
+            {VUES.map(v => {
+              const on = filtre === v.id;
+              const crie = v.alerte && v.n > 0;
+              return (
+                <button key={v.id} onClick={() => setFiltre(v.id)} style={{
+                  padding: '5px 13px', borderRadius: 999, cursor: 'pointer',
+                  fontFamily: 'Lexend,sans-serif', fontSize: 12, fontWeight: on ? 800 : 600,
+                  border: '1px solid ' + (on ? 'var(--blue)' : 'var(--border)'),
+                  background: on ? 'var(--blue)' : 'white',
+                  color: on ? 'white' : 'var(--text)',
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                }}>
+                  {v.label}
+                  <span style={{
+                    padding: '0 6px', borderRadius: 999, fontSize: 11, fontWeight: 800,
+                    background: on ? 'rgba(255,255,255,.25)' : (crie ? 'var(--st-echec-bg)' : 'var(--st-neutre-bg)'),
+                    color: on ? 'white' : (crie ? 'var(--st-echec-fg)' : 'var(--muted)'),
+                  }}>{v.n}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {totalAffiche === 0 ? (
+            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
+              Aucune patiente dans cette vue pour la journée choisie.
+            </p>
+          ) : etapesAffichees.map(e => (
             <div key={e.rail.code} style={{ marginBottom: 'var(--sp-4)' }}>
-              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px' }}>
+              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px', flexWrap: 'wrap' }}>
                 <BadgeRail rail={e.rail} />
                 <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-                  {e.manques.length} patiente{e.manques.length > 1 ? 's' : ''} sur {e.surEtape} attendues
+                  {e.visibles.length === e.surEtape
+                    ? `${e.surEtape} patiente${e.surEtape > 1 ? 's' : ''} attendue${e.surEtape > 1 ? 's' : ''}`
+                    : `${e.visibles.length} sur ${e.surEtape} attendues`}
+                  {' · '}{e.jointes} jointe{e.jointes > 1 ? 's' : ''}
+                  {e.manques > 0 && <> · <strong style={{ color: '#b91c1c' }}>{e.manques} sans contact</strong></>}
                 </span>
               </p>
-              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'Dernier appel', 'Ce qui a été tenté']}>
-                {e.manques.map(r => (
-                  <tr key={r.id}>
-                    <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
-                      {[r.nom, r.prenom].filter(Boolean).join(' ') || '—'}
+              <DataTable colonnes={['État', 'Patiente', 'Fin de location', 'Ce qui a été fait', 'Action à réaliser']}>
+                {e.visibles.map(b => (
+                  <tr key={b.r.id}>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                      <PastilleEtat b={b} />
                     </td>
-                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>{r.telephone || '—'}</td>
+                    <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+                      <span style={{ fontWeight: 600 }}>
+                        {[b.r.nom, b.r.prenom].filter(Boolean).join(' ') || '—'}
+                      </span>
+                      <br />
+                      <span style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>
+                        {b.r.telephone || 'pas de téléphone'}
+                      </span>
+                    </td>
                     <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
                       {/* La FIN DE LOCATION, pas l'« applicable du » : c'est la date que la
                           patiente connaît, et celle qu'annoncent les SMS. */}
-                      {r.date_echeance ? formatDate(decalerJours(r.date_echeance, -1)) : '—'}
+                      {b.r.date_echeance ? formatDate(decalerJours(b.r.date_echeance, -1)) : '—'}
                     </td>
-                    {/* ⚠️ La DATE, pas le compteur `nb_tentatives` : celui-ci porte sur TOUT
-                        le parcours, donc « 1 » s'afficherait à côté de « rien n'a été tenté »
-                        — les deux vrais, et contradictoires à la lecture. Une date antérieure
-                        à l'ouverture de l'étape se comprend d'un coup d'œil. */}
-                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
-                      {r.dernier_appel
-                        ? formatDate(jourLocal(r.dernier_appel))
-                        : <span style={{ color: '#b91c1c', fontWeight: 700 }}>jamais</span>}
+                    {/* ⚠️ CE QUI A ÉTÉ FAIT — les trois canaux, tous datés DANS LE RAIL. Un SMS
+                        livré la semaine dernière, à l'étape précédente, ne dit rien de
+                        celle-ci : c'est la raison d'être de l'étape suivante. */}
+                    <td style={tdStyle}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
+                        {/* ⚠️ LE TRANSCRIPT SE LIT ICI, à côté de ce que l'appel a donné —
+                            pas dans la colonne « Action à réaliser », qui ne doit porter
+                            qu'un seul libellé cliquable, « Vérifier ». Lire n'est pas une
+                            action à réaliser : c'est ce qui permet de juger. Le bouton est
+                            une ICÔNE, la même que partout ailleurs dans le dashboard. */}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Chip texte={b.appel.texte} ton={b.appel.ton} />
+                          {b.appel.tente && (
+                            <BoutonTranscript relance={b.r} onOuvrir={setTranscrit} taille={22} />
+                          )}
+                        </span>
+                        <Chip texte={b.sms.texte} ton={b.sms.ton} />
+                        <Chip texte={b.mail.texte} ton={b.mail.ton} />
+                        {/* Repère utile quand on se demande pourquoi elle n'est plus rappelée. */}
+                        {b.r.dernier_appel && (
+                          <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                            dernier appel le {formatDate(jourLocal(b.r.dernier_appel))}
+                            {' · '}{b.r.nb_tentatives ?? 0}/{PLAFOND_TENTATIVES} tentatives
+                          </span>
+                        )}
+                      </div>
                     </td>
-                    <td style={tdStyle}><PourquoiRien r={r} rail={e.rail} /></td>
+                    {/* ⚠️ DU TEXTE, SAUF « Vérifier ». Le client a tranché le 2026-09-21 : c'est
+                        le seul libellé cliquable de l'écran. Les autres actions se font dans
+                        « Relances », qui porte l'outillage — et les contacts sortants. */}
+                    <td style={tdStyle}>
+                      <span style={{
+                        color: COULEUR_ACTION[b.action.gravite],
+                        fontWeight: b.action.gravite === 'alerte' ? 700 : 500,
+                      }}>
+                        {b.action.gravite === 'alerte' && (
+                          <PhoneOff size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
+                        )}
+                        {b.action.texte}
+                      </span>
+                      {b.action.bouton === 'verifier' && (
+                        <span style={{ marginLeft: 9, display: 'inline-block' }}>
+                          <BoutonVerifier r={b.r} />
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </DataTable>
@@ -520,7 +640,7 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
               Ces patientes ont dit, pendant un appel, avoir déjà envoyé leur ordonnance.
               Tant que personne ne vérifie, <strong>elles ne sont plus appelées</strong>.
               <strong> Cette liste n’est pas limitée à la journée choisie</strong> : elle reste
-              affichée tant qu’elle n’a pas été traitée. Le bouton « Vérifié » retire le
+              affichée tant qu’elle n’a pas été traitée. Le bouton « Vérifier » retire le
               signalement et remet la patiente dans le parcours.
             </p>
           </div>
@@ -532,7 +652,7 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
                   {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''} — étape atteinte
                 </span>
               </p>
-              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit', '']}>
+              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit', 'Action à réaliser']}>
                 {g.lignes.map(r => (
                   <tr key={r.id}>
                     <td style={{ ...tdStyle, fontWeight: 600, whiteSpace: 'nowrap' }}>
@@ -544,8 +664,16 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
                     </td>
                     {/* Le drapeau n'a pas de date propre : il est posé par le post-call, donc
                         la date de l'appel qui l'a déclenché est la meilleure approximation. */}
+                    {/* ⚠️ LE TRANSCRIPT COMPTE DOUBLE ICI : la déclaration « j'ai déjà
+                        envoyé » est produite par un MODÈLE qui interprète cet appel. Sans
+                        le texte sous les yeux, on lève un drapeau sur la foi d'une
+                        interprétation qu'on n'a pas lue — or ce drapeau fait taire la
+                        patiente jusqu'à ce que quelqu'un clique. */}
                     <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
-                      {r.dernier_appel ? formatDate(jourLocal(r.dernier_appel)) : '—'}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                        {r.dernier_appel ? formatDate(jourLocal(r.dernier_appel)) : '—'}
+                        {r.dernier_appel && <BoutonTranscript relance={r} onOuvrir={setTranscrit} taille={22} />}
+                      </span>
                     </td>
                     {/* ⚠️ LE RECOUPEMENT, et c'est l'information utile : la déclaration vient
                         d'un modèle qui interprète un transcript, ORTHOP est la preuve. « Elle
@@ -558,34 +686,11 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
                             {formatDate(String(r.fin_application).slice(0, 10))}
                           </span>
                         : <span style={{ color: 'var(--muted)' }}>
-                            ORTHOP la réclame toujours — à vérifier
+                            ORTHOP la réclame toujours — à contrôler
                           </span>}
                     </td>
-                    {/* ⚠️ La SEULE action de cet écran, et elle ne contacte personne :
-                        elle lève le drapeau, donc la patiente redevient appelable par le
-                        parcours. C'est irréversible depuis ici — le drapeau ne se repose
-                        que lors d'un prochain appel où elle le redirait. */}
                     <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      {onVerifie && (
-                        <button
-                          onClick={async () => {
-                            setVerifEnCours(r.id);
-                            await onVerifie(r);
-                            setVerifEnCours(null);
-                          }}
-                          disabled={verifEnCours !== null}
-                          title="Dossier contrôlé — retirer ce signalement et remettre la patiente dans le parcours"
-                          style={{
-                            padding: '4px 12px', borderRadius: 'var(--r-md)',
-                            fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 700,
-                            border: '1px solid ' + (verifEnCours !== null ? 'var(--border)' : '#a7f3d0'),
-                            background: verifEnCours === r.id ? '#ecfdf5' : 'white',
-                            color: verifEnCours !== null ? 'var(--muted)' : '#047857',
-                            cursor: verifEnCours !== null ? 'not-allowed' : 'pointer',
-                          }}>
-                          {verifEnCours === r.id ? 'Enregistrement…' : 'Vérifié'}
-                        </button>
-                      )}
+                      <BoutonVerifier r={r} />
                     </td>
                   </tr>
                 ))}
@@ -596,11 +701,17 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
       ))}
 
       <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '18px 2px 0', lineHeight: 1.6 }}>
-        Cet écran n’envoie rien : ni appel, ni SMS, ni mail. Les chiffres reflètent l’état
-        <strong> de maintenant</strong> — un SMS livré cette nuit apparaît donc sur la journée d’hier, ce
-        qui est voulu. Les patientes dont l’ordonnance est arrivée, ou couvertes par une ordonnance en
-        cours, ne sont pas comptées : aucun contact ne leur était dû.
+        Cet écran n’envoie rien : ni appel, ni SMS, ni mail. « Vérifier » est sa seule action, et
+        elle ne contacte personne. Les chiffres reflètent l’état <strong>de maintenant</strong> — un
+        SMS livré cette nuit apparaît donc sur la journée d’hier, ce qui est voulu. Les patientes dont
+        l’ordonnance est arrivée, ou couvertes par une ordonnance en cours, ne sont pas comptées :
+        aucun contact ne leur était dû.
       </p>
+
+      {/* ⚠️ Rendu par un PORTAIL (dans `TranscriptPanel`) : sans lui, l'animation `fadeUp`
+          de la vue porte un `transform` qui devient le bloc conteneur de tout
+          `position: fixed`, et le panneau s'ouvre hors de l'écran. Ne pas retirer. */}
+      {transcrit && <TranscriptPanel relance={transcrit} onClose={() => setTranscrit(null)} />}
     </div>
   );
 }
