@@ -2245,9 +2245,37 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
     load();
   }
 
-  async function markOrdoVerified(r: Relance) {
-    const ok = await updateRelance(user.token, r.id, { ordonnance_deja_envoyee: false });
-    if (ok) setRelances(prev => prev.map(x => x.id === r.id ? { ...x, ordonnance_deja_envoyee: false } : x));
+  /**
+   * Lève le drapeau « dit avoir envoyé », et CONSIGNE CE QU'ON A VU DANS ORTHOP.
+   *
+   * ⚠️⚠️ `recue` n'est pas un détail d'affichage : sans lui, on sait qu'un dossier a été
+   * contrôlé mais jamais CE QU'ON Y A TROUVÉ. Or c'est toute la différence entre « elle
+   * avait raison, l'ordonnance est arrivée » et « elle a dit l'avoir envoyée et ORTHOP ne
+   * l'a toujours pas » — deux situations qui n'appellent pas la même suite, et qu'on ne
+   * peut plus distinguer trois jours plus tard.
+   *
+   * ⚠️ `undefined` = contrôle sans verdict (le bouton de l'onglet Relances, qui n'a pas la
+   * colonne ORTHOP sous les yeux). On ne fabrique alors AUCUNE note : une note vide ou
+   * approximative est pire qu'une absence de note.
+   */
+  async function markOrdoVerified(r: Relance, recue?: boolean) {
+    const champs: Record<string, unknown> = { ordonnance_deja_envoyee: false };
+    let notes = r.notes ?? null;
+
+    if (recue !== undefined) {
+      const jour = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
+      const ligne = `[${jour}] Contrôle ORTHOP : ordonnance ${recue ? 'reçue' : 'PAS ENCORE reçue'}.`;
+      // ⚠️ ON CONCATÈNE. W-Update-Relance fait `SET notes = '...'` : lui passer la seule
+      // ligne du jour EFFACERAIT tout l'historique de la fiche, en silence.
+      notes = [r.notes, ligne].filter(Boolean).join('\n');
+      champs.notes = notes;
+    }
+
+    const ok = await updateRelance(user.token, r.id, champs);
+    if (ok) setRelances(prev => prev.map(x => x.id === r.id
+      ? { ...x, ordonnance_deja_envoyee: false, notes }
+      : x));
+    return ok;
   }
 
   async function handleDelete(id: number) {

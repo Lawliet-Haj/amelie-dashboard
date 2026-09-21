@@ -128,11 +128,13 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
    * l'appel à W-Update-Relance et met à jour sa propre liste — la ligne se met donc à jour
    * d'elle-même. Réécrire le fetch ici en aurait fait une seconde copie, vouée à diverger.
    */
-  onVerifie?: (r: Relance) => Promise<void>;
+  onVerifie?: (r: Relance, recue: boolean) => Promise<unknown>;
 }) {
   // Le dossier dont la vérification est en cours : le bouton se verrouille le temps
   // de l'aller-retour, sinon un double clic part deux fois.
   const [verifEnCours, setVerifEnCours] = useState<number | null>(null);
+  /** Le dossier dont on vient de cliquer « Vérifier » et qui attend la réponse ORTHOP. */
+  const [verifChoix, setVerifChoix] = useState<number | null>(null);
   /**
    * Le dossier dont on lit le transcript.
    *
@@ -284,29 +286,68 @@ export function ControleJournee({ relances, enPause, motifPause, onVerifie }: {
    * appelable par le parcours. C'est irréversible depuis ici — le drapeau ne se repose que
    * lors d'un prochain appel où elle le redirait.
    *
-   * ⚠️ Il se verrouille pendant l'aller-retour, sinon un double clic part deux fois.
+   * ⚠️⚠️ IL DEMANDE CE QU'ON A VU DANS ORTHOP, et c'est le point (2026-09-21, demande du
+   * client). Un simple « contrôlé » dit qu'on a regardé, jamais CE QU'ON A TROUVÉ : trois
+   * jours plus tard, plus personne ne peut distinguer « elle avait raison, l'ordonnance
+   * est arrivée » de « elle l'a dit et ORTHOP ne l'a toujours pas ». La réponse part dans
+   * les notes du dossier, datée.
+   *
+   * ⚠️ Le libellé cliquable reste « Vérifier » : les deux réponses ne sont pas une seconde
+   * action, c'est la MÊME action qui pose sa question. Rien d'autre sur cet écran ne se
+   * clique.
+   *
+   * ⚠️ Verrouillé pendant l'aller-retour, sinon un double clic part deux fois.
    */
   const BoutonVerifier = ({ r }: { r: Relance }) => {
     if (!onVerifie) return null;
     const occupe = verifEnCours !== null;
+    const repondre = async (recue: boolean) => {
+      setVerifEnCours(r.id);
+      await onVerifie(r, recue);
+      setVerifEnCours(null);
+      setVerifChoix(null);
+    };
+    const choix = (texte: string, recue: boolean, couleur: string, fond: string) => (
+      <button
+        onClick={() => repondre(recue)} disabled={occupe}
+        style={{
+          padding: '4px 10px', borderRadius: 'var(--r-md)',
+          fontFamily: 'Lexend,sans-serif', fontSize: 11, fontWeight: 700,
+          border: '1px solid ' + couleur, background: fond, color: couleur,
+          cursor: occupe ? 'not-allowed' : 'pointer', opacity: occupe ? 0.5 : 1,
+        }}>{texte}</button>
+    );
+
+    if (verifEnCours === r.id) {
+      return <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Enregistrement…</span>;
+    }
+    if (verifChoix === r.id) {
+      return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <span style={{ fontSize: 11, color: 'var(--muted)' }}>Dans ORTHOP :</span>
+          {choix('Ordonnance reçue', true, '#047857', '#ecfdf5')}
+          {choix('Pas encore reçue', false, '#b45309', '#fffbeb')}
+          <button
+            onClick={() => setVerifChoix(null)} title="Annuler"
+            style={{ border: 'none', background: 'none', color: 'var(--muted)', cursor: 'pointer',
+                     fontSize: 14, lineHeight: 1, padding: '0 2px' }}>×</button>
+        </span>
+      );
+    }
     return (
       <button
-        onClick={async () => {
-          setVerifEnCours(r.id);
-          await onVerifie(r);
-          setVerifEnCours(null);
-        }}
+        onClick={() => setVerifChoix(r.id)}
         disabled={occupe}
-        title="Contrôlez dans ORTHOP, puis cliquez : le signalement est retiré et la patiente revient dans le parcours"
+        title="Contrôlez d’abord dans ORTHOP, puis cliquez : vous indiquerez si l’ordonnance y est ou non, et le signalement sera retiré"
         style={{
           padding: '4px 12px', borderRadius: 'var(--r-md)',
           fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 700,
           border: '1px solid ' + (occupe ? 'var(--border)' : '#a7f3d0'),
-          background: verifEnCours === r.id ? '#ecfdf5' : 'white',
+          background: 'white',
           color: occupe ? 'var(--muted)' : '#047857',
           cursor: occupe ? 'not-allowed' : 'pointer',
         }}>
-        {verifEnCours === r.id ? 'Enregistrement…' : 'Vérifier'}
+        Vérifier
       </button>
     );
   };
