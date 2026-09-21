@@ -2544,7 +2544,13 @@ export default function App() {
     { id: 'appels',       label: 'Appels récents',   icon: PhoneCall,     visibleRoles: ['admin', 'conseillere'] },
     { id: 'rappels',      label: 'Rappels',           icon: Bell,          visibleRoles: ['admin', 'conseillere'] },
     { id: 'anomalies',    label: 'Anomalies',         icon: AlertTriangle, visibleRoles: ['admin', 'conseillere'] },
-    { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement'] },
+    // ⚠️ `facturation` figure ici depuis le 2026-09-21 : le client a demandé UN SEUL
+    //    accès pour les deux modules, et a choisi d'élargir ce rôle plutôt que d'en créer
+    //    un troisième. Le cloisonnement du 2026-08-28 ne protégeait plus personne : le
+    //    rôle n'avait qu'UN compte, celui de la personne qui demandait les deux.
+    //    ⚠️ Le nom du rôle ne dit donc plus ce qu'il donne — d'où son libellé explicite
+    //    partout où on crée ou lit un compte (`LIB_ROLE` ci-dessous, et UsersView).
+    { id: 'recouvrement', label: 'Recouvrement',      icon: Briefcase,     visibleRoles: ['admin', 'recouvrement', 'facturation'] },
     { id: 'facturation',  label: 'Facturation',        icon: Receipt,       visibleRoles: ['admin', 'facturation'] },
     { id: 'users',        label: 'Utilisateurs',      icon: Users,         visibleRoles: ['admin'] },
     // ⚠️ Visible aussi pour les rôles métier : chacun y règle SES paramètres, et le
@@ -2719,7 +2725,7 @@ export default function App() {
               <div style={{ fontSize: 10.5, color: 'var(--muted)' }}>
                 {user.role === 'admin' ? '🛡 Admin'
                   : user.role === 'recouvrement' ? '💼 Recouvrement'
-                  : user.role === 'facturation' ? '🧾 Facturation'
+                  : user.role === 'facturation' ? '🧾 Facturation + Recouvrement'
                   : '👤 Conseillère'}
               </div>
             </div>

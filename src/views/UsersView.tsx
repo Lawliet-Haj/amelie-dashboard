@@ -98,7 +98,7 @@ function UserModal({
             <select style={{ ...inputCls, cursor: 'pointer' }} value={form.role} onChange={set('role')}>
               <option value="conseillere">Conseillère</option>
               <option value="recouvrement">Recouvrement</option>
-              <option value="facturation">Facturation</option>
+              <option value="facturation">Facturation + Recouvrement</option>
               <option value="admin">Administrateur</option>
             </select>
           </div>
@@ -361,7 +361,7 @@ function BulkImportModal({
                 >
                   <option value="conseillere">Conseillère</option>
                   <option value="recouvrement">Recouvrement</option>
-                  <option value="facturation">Facturation</option>
+                  <option value="facturation">Facturation + Recouvrement</option>
                   <option value="admin">Admin</option>
                 </select>
                 {/* Password */}
@@ -671,7 +671,7 @@ export function UsersView({ currentUser }: { currentUser: AuthUser }) {
                         </span>
                       ) : u.role === 'facturation' ? (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#ccfbf1', color: '#0f766e', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
-                          🧾 Facturation
+                          🧾 Facturation + Recouvrement
                         </span>
                       ) : (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, padding: '3px 10px', borderRadius: 20, background: 'var(--blue-light)', color: 'var(--blue-dark)', fontWeight: 600, fontFamily: 'Lexend,sans-serif' }}>
