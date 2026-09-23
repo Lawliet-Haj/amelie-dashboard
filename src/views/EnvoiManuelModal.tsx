@@ -160,8 +160,11 @@ export function EnvoiManuelModal({ token, palierInitial, onClose, onFini }: {
         n: prets.filter(l => { const v = verdicts.get(l.cle); return v && cleMessage(palier, v) === k; }).length,
       }))
     : [];
-  const nb = { pret: prets.length, deja: 0, invalide: 0 };
-  if (verdicts) for (const l of remplies) { const s = verdicts.get(l.cle)?.statut; if (s === 'deja') nb.deja++; if (s === 'invalide') nb.invalide++; }
+  const nb = { pret: prets.length, existantes: 0, deja: 0, invalide: 0 };
+  if (verdicts) for (const l of remplies) {
+    const v = verdicts.get(l.cle), s = v?.statut;
+    if (s === 'deja') nb.deja++; if (s === 'invalide') nb.invalide++; if (s === 'pret' && v?.existant) nb.existantes++;
+  }
 
   const titreEtape = (n: number, texte: string, actif: boolean, fait: boolean) => (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700,
@@ -274,8 +277,15 @@ export function EnvoiManuelModal({ token, palierInitial, onClose, onFini }: {
                         </td>
                         <td style={{ padding: '6px 8px', minWidth: verdicts ? 190 : 0 }}>
                           {v && (v.statut === 'pret'
-                            ? <Chip texte={palier === 'J15' ? (v.sms1_parti ? 'Prête — RAPPEL' : 'Prête — 1er avertissement') : 'Prête'} ton="ok"
-                                titre={palier === 'J15' && !v.sms1_parti ? 'Le J-30 n’est jamais parti pour elle : elle reçoit le texte du premier avertissement' : undefined} />
+                            ? <>
+                                <Chip texte={palier === 'J15' ? (v.sms1_parti ? 'Prête — RAPPEL' : 'Prête — 1er avertissement') : 'Prête'} ton="ok"
+                                  titre={palier === 'J15' && !v.sms1_parti ? 'Le J-30 n’est jamais parti pour elle : elle reçoit le texte du premier avertissement' : undefined} />
+                                {/* ⚠️ Déjà dans la liste, SMS pas encore parti : c'est SA ligne qui part,
+                                    maintenant — l'envoi automatique ne la renverra pas. */}
+                                {v.existant && (
+                                  <span style={{ display: 'block', fontSize: 11, color: '#047857', marginTop: 3, lineHeight: 1.4 }}>{v.raison}</span>
+                                )}
+                              </>
                             : <span style={{ fontSize: 11.5, lineHeight: 1.4, color: v.statut === 'invalide' ? '#b91c1c' : 'var(--muted)', display: 'block' }}>
                                 {v.statut === 'deja' ? '↷ ' : '✕ '}{v.raison}
                               </span>)}
@@ -316,6 +326,7 @@ export function EnvoiManuelModal({ token, palierInitial, onClose, onFini }: {
               <div style={{ marginTop: 14 }}>
                 <p style={{ fontSize: 12.5, margin: '0 0 8px', color: 'var(--text)' }}>
                   <strong>{nb.pret} prête{nb.pret > 1 ? 's' : ''}</strong>
+                  {nb.existantes > 0 && <> (dont {nb.existantes} déjà dans la liste, dont le SMS part maintenant)</>}
                   {nb.deja > 0 && <> · {nb.deja} déjà dans la liste (écartée{nb.deja > 1 ? 's' : ''} : pas de second SMS)</>}
                   {nb.invalide > 0 && <> · <span style={{ color: '#b91c1c' }}>{nb.invalide} à corriger</span></>}
                 </p>
@@ -426,12 +437,17 @@ function Resultat({ r, lignes }: { r: { ajout: ResultatAjout | null; envoi: Resu
         {r.ajout.lignes.map((la, i) => {
           const l = lignes[la.idx];
           const s = la.id ? statutEnvoi.get(la.id) : undefined;
+          const deja = la.statut === 'existante';
+          // Une ligne sans trace dans le rapport d'envoi, hors écart : son SMS est parti ENTRE
+          // la vérification et le clic (envoi automatique) — la garde `sms_statut IS NULL`
+          // l'a écartée, et c'est exactement ce qu'on veut : pas de second SMS.
           const txt = !la.id ? '✕ Non ajoutée — ' + (la.raison || 'déjà dans la liste')
-            : s === 'envoye' ? '✓ SMS envoyé'
-            : s === 'echec_envoi' ? '✕ Ajoutée, mais l’envoi a échoué'
-            : ecartes.has(la.id) ? '✕ Ajoutée, SMS non envoyé — ' + ecartes.get(la.id)
-            : r.erreur ? '… Ajoutée, en attente d’envoi' : '… Ajoutée';
-          const ton = !la.id || s === 'echec_envoi' || ecartes.has(la.id ?? -1) ? '#b91c1c' : s === 'envoye' ? '#15803d' : 'var(--muted)';
+            : s === 'envoye' ? (deja ? '✓ SMS envoyé — elle était déjà dans la liste' : '✓ SMS envoyé')
+            : s === 'echec_envoi' ? (deja ? '✕ L’envoi a échoué' : '✕ Ajoutée, mais l’envoi a échoué')
+            : ecartes.has(la.id) ? '✕ SMS non envoyé — ' + ecartes.get(la.id)
+            : r.erreur ? (deja ? '… En attente d’envoi' : '… Ajoutée, en attente d’envoi')
+            : '✓ SMS déjà parti entre-temps (envoi automatique) — pas de second SMS';
+          const ton = !la.id || s === 'echec_envoi' || ecartes.has(la.id ?? -1) ? '#b91c1c' : s === 'envoye' || (!r.erreur && la.id) ? '#15803d' : 'var(--muted)';
           return (
             <div key={i} style={{ display: 'flex', gap: 12, padding: '7px 12px', borderTop: i ? '1px solid #f1f5f9' : 'none', fontSize: 12.5, alignItems: 'baseline', flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, minWidth: 180 }}>{l ? [l.nom, l.prenom].filter(Boolean).join(' ') : '—'}</span>

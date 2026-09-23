@@ -152,7 +152,8 @@
   <div class="encadre info">
     <p><strong>Quand s’en servir ?</strong> Quand une patiente devait recevoir son avertissement
     J-30 ou J-15 et <strong>n’apparaît pas dans la liste</strong> : lot ORTHOP créé en retard,
-    extraction manquée, patiente signalée par téléphone.</p>
+    extraction manquée, patiente signalée par téléphone. Ou pour envoyer <strong>tout de
+    suite</strong> le SMS d’une patiente déjà dans la liste, sans attendre l’envoi automatique.</p>
     <p>Elle reçoit <strong>exactement le même SMS</strong> que l’envoi automatique, et elle est
     ajoutée à la liste Facturation pour qu’on puisse en suivre la livraison.</p>
     <p>Ce n’est <strong>pas</strong> un moyen de renvoyer un SMS déjà parti : le système le refuse
@@ -222,7 +223,10 @@
     <tr><td>Prête — RAPPEL <em>(J-15)</em></td><td>Son premier avertissement J-30 est bien parti : elle reçoit le rappel.</td></tr>
     <tr><td>Prête — 1er avertissement <em>(J-15)</em></td><td>Elle n’a jamais reçu le J-30 : elle reçoit le texte du
       premier avertissement, pour ne pas « rappeler » un message qu’elle n’a jamais eu. C’est la même règle que l’envoi automatique.</td></tr>
-    <tr><td>↷ déjà dans la liste</td><td>Elle a déjà ce SMS (ou il partira avec son échéance) : elle est écartée, <strong>pas de second SMS</strong>.</td></tr>
+    <tr><td>Prête — « déjà dans la liste, SMS pas encore parti »</td><td>Elle est déjà dans la liste mais son SMS
+      attendait l’envoi automatique : <strong>il part maintenant</strong>, sur sa ligne existante. L’envoi
+      automatique ne le renverra pas, et elle reste une seule fois dans la liste.</td></tr>
+    <tr><td>↷ déjà dans la liste — SMS parti le …</td><td>Elle a déjà reçu ce SMS : elle est écartée, <strong>pas de second SMS</strong>.</td></tr>
     <tr><td>✕ en rouge</td><td>La ligne est à corriger (voir l’étape 5). Elle ne part pas.</td></tr>
   </table>
 
@@ -258,14 +262,20 @@
     <tr><td>Fin de location passée</td><td>Le SMS dirait « votre ordonnance expire le » une date déjà dépassée.</td></tr>
     <tr><td>Fin de location à plus de 6 mois</td><td>Presque toujours une faute de frappe sur l’année.</td></tr>
     <tr><td>En double dans la saisie</td><td>Même numéro, même date, deux fois : une seule ligne part.</td></tr>
-    <tr><td>Déjà dans la liste</td><td>Même numéro, même palier, même échéance qu’une ligne existante :
-      elle a déjà son SMS, ou il partira avec son échéance.</td></tr>
+    <tr><td>Déjà dans la liste, SMS déjà parti</td><td>Même numéro, même palier, échéance à une semaine près :
+      elle a déjà reçu ce SMS. On n’en envoie jamais un second.</td></tr>
+    <tr><td>Ordonnance reçue</td><td>ORTHOP ne la réclame plus : il n’y a rien à lui demander.</td></tr>
   </table>
 
   <div class="encadre info">
-    <p><strong>Et si ORTHOP ramène la patiente plus tard ?</strong> Elle n’est pas ajoutée une
-    seconde fois et <strong>ne reçoit pas de second SMS</strong> : sa ligne manuelle est simplement
-    rattachée à son dossier ORTHOP.</p>
+    <p><strong>Une date tapée à un jour près ne crée pas de doublon.</strong> Une patiente est
+    reconnue par son numéro et son palier, avec une échéance à une semaine près. Si elle est
+    déjà dans la liste, c’est <strong>sa</strong> fin de location qui figure dans le SMS, et la
+    fenêtre l’indique.</p>
+    <p><strong>Et si l’envoi manuel passe avant l’envoi automatique, ou si ORTHOP ramène la
+    patiente plus tard ?</strong> Elle n’est pas ajoutée une seconde fois et <strong>ne reçoit pas
+    de second SMS</strong> : l’envoi automatique ne reprend jamais un SMS déjà parti, et sa ligne
+    manuelle est simplement rattachée à son dossier ORTHOP.</p>
     <p><strong>Seul le SMS part.</strong> L’ajout manuel n’envoie pas de mail.</p>
   </div>
 

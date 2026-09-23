@@ -40,6 +40,12 @@ export interface LigneVerifiee {
   raison: string | null;
   /** Pour un J-15 : le premier avertissement est-il parti ? Décide du texte (« RAPPEL »). */
   sms1_parti: boolean;
+  /**
+   * La ligne déjà dans la liste pour cette patiente (même numéro, même palier, échéance à
+   * ±7 jours). Avec un statut `pret`, c'est SA ligne qui partira : son SMS n'était pas
+   * encore parti (2026-09-23). Sa date fait alors foi, et `date_echeance` la porte déjà.
+   */
+  existant?: { id: number; sms_statut: string | null; sms_le: string | null; date_echeance: string | null } | null;
 }
 
 export interface Apercu { message: string; segments: number }
@@ -111,7 +117,8 @@ export async function apercusMessages(token: string, palier: Palier, prets: Lign
 
 export interface ResultatAjout {
   batch_label: string | null;
-  lignes: { idx: number; id: number | null; statut: 'ajoutee' | 'non_ajoutee'; raison: string | null }[];
+  /** `existante` : déjà dans la liste, SMS pas encore parti — c'est sa ligne qui est envoyée. */
+  lignes: { idx: number; id: number | null; statut: 'ajoutee' | 'existante' | 'non_ajoutee'; raison: string | null }[];
   ids: number[];
 }
 
