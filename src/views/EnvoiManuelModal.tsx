@@ -195,8 +195,9 @@ export function EnvoiManuelModal({ token, palierInitial, onClose, onFini }: {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-            {/* Servi par nginx depuis `public/docs/` — chemin ABSOLU, l'application est une SPA. */}
-            <a href="/docs/mode-op-envoi-manuel-facturation.html" target="_blank" rel="noopener noreferrer"
+            {/* Le mode opératoire COMMUN (partie 2), servi par nginx depuis `public/docs/` — chemin
+                ABSOLU, l'application est une SPA. */}
+            <a href="/docs/mode-op-controle-journee.html#partie-facturation" target="_blank" rel="noopener noreferrer"
               title="Comment envoyer un SMS à la main — document imprimable, s’ouvre dans un onglet"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 5, textDecoration: 'none', padding: '4px 10px',
                        borderRadius: 'var(--r-md)', border: '1px solid var(--border)', color: 'var(--muted)', fontSize: 12, fontWeight: 600 }}>
