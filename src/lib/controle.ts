@@ -155,7 +155,10 @@ export interface ActionDossier {
       | 'quota' | 'rien-tente' | 'reprise' | 'reprise-passee' | 'fin-parcours';
   texte: string;
   gravite: GraviteAction;
-  /** Le SEUL cas cliquable de tout l'écran : lever le drapeau déclaratif. */
+  /**
+   * La vérification ORTHOP, qui lève le drapeau déclaratif. Les autres gestes (« Traiter »)
+   * se déduisent de `demandeUnGeste()`, pas de ce champ.
+   */
   bouton?: 'verifier';
 }
 
@@ -263,16 +266,16 @@ export function actionDuDossier(
  * quelque chose. Demande du client, 2026-09-21.
  *
  * ⚠️ L'ordre suit les CODES d'action, pas la gravité : « Vérifier » est rangé en tête
- * alors que sa gravité est `attente`, parce que c'est **la seule chose que cet écran
- * permette de faire**. Un tri sur la gravité l'aurait noyé au milieu des reprises
- * automatiques, qui ne demandent rien.
+ * alors que sa gravité est `attente`, parce que la patiente est SILENCIÉE tant que
+ * personne ne vérifie. Un tri sur la gravité l'aurait noyé au milieu des reprises
+ * automatiques.
  *
  * ⚠️ Un code absent de cette table prend le rang 99 : il descend en bas plutôt que de
  * remonter par accident. Une action nouvelle qu'on aurait oublié de classer ne doit pas
  * se retrouver en tête de la liste des choses à faire.
  */
 const RANG_ACTION: Record<ActionDossier['code'], number> = {
-  verifier: 0,        // le seul geste possible ici
+  verifier: 0,        // silenciée tant que personne ne vérifie
   'rien-tente': 1,    // personne n'a rien essayé — le cas grave
   quota: 2,           // 5 tentatives, le parcours ne la reprendra plus
   'fin-parcours': 3,  // sortie sans avoir été jointe
@@ -284,7 +287,15 @@ const RANG_ACTION: Record<ActionDossier['code'], number> = {
   jointe: 9,          // rien à faire
 };
 
-export function rangAction(b: Bilan): number {
+/**
+ * Une ligne TRAITÉE descend sous tout ce qui reste à faire, juste au-dessus des jointes :
+ * elle est réglée, mais c'est encore elle qu'on cherche des yeux juste après l'avoir
+ * traitée.
+ */
+const RANG_TRAITEE = 8.5;
+
+export function rangAction(b: Bilan, traitee = false): number {
+  if (traitee) return RANG_TRAITEE;
   const r = RANG_ACTION[b.action.code];
   return r === undefined ? 99 : r;
 }
@@ -295,9 +306,49 @@ export function rangAction(b: Bilan): number {
  * ⚠️ `sort` de JavaScript est STABLE depuis ES2019 : à rang égal, l'ordre d'origine est
  * conservé. On ne réinvente donc pas un second critère qui divergerait de celui de
  * l'API — et deux lectures de la même journée donnent la même liste.
+ *
+ * `traitees` : les dossiers déjà traités par l'équipe CE JOUR-LÀ (clé = `relance.id`).
  */
-export function parOrdreDAction(bilans: Bilan[]): Bilan[] {
-  return [...bilans].sort((a, b) => rangAction(a) - rangAction(b));
+export function parOrdreDAction(bilans: Bilan[], traitees?: ReadonlyMap<number, unknown>): Bilan[] {
+  const rang = (b: Bilan) => rangAction(b, Boolean(traitees?.has(b.r.id)));
+  return [...bilans].sort((a, b) => rang(a) - rang(b));
+}
+
+/**
+ * ── CE QUI APPELLE UN GESTE DE L'ÉQUIPE (2026-09-23) ────────────────────────────
+ *
+ * Demande du client, au sortir d'une réunion : *« pour ceux qui ne sont pas vert, mettre
+ * un bouton d'action, qu'on puisse voir traité par + nom de celui qui a traité, avec un
+ * commentaire, et ensuite ça doit passer au vert »*.
+ *
+ * ⚠️⚠️ LES LIGNES GRISES (« En attente ») N'ONT PAS DE BOUTON, et c'est délibéré. Elles
+ * ne sont grises QUE lorsque le contexte explique tout : week-end, module en pause, ou
+ * journée pas encore finie. Les « traiter » à 10h du matin les passerait au vert AVANT
+ * que les appels de 12h30 aient eu lieu — et si ces appels échouaient, la ligne resterait
+ * verte sur un manquement réel. Un vert posé trop tôt est pire qu'un gris.
+ *
+ * ⚠️ « Vérifier » (la patiente dit avoir envoyé) est un geste MÊME sur une ligne jointe :
+ * elle a parlé, c'est justement pendant cet appel qu'elle l'a dit.
+ */
+export function demandeUnGeste(b: Bilan): boolean {
+  if (b.action.code === 'verifier') return true;
+  if (b.jointe) return false;
+  return b.action.gravite === 'alerte' || b.action.gravite === 'attente';
+}
+
+/**
+ * Le DERNIER traitement de chaque dossier, parmi ceux d'une journée.
+ *
+ * ⚠️ Départagé par l'`id`, pas par l'horodatage : deux gestes posés dans la même requête
+ * portent le même `NOW()`, et l'`id` croît avec l'insertion.
+ */
+export function dernierTraitementParDossier<T extends { id: number; relance_id: number }>(ts: T[]): Map<number, T> {
+  const m = new Map<number, T>();
+  for (const t of ts) {
+    const p = m.get(t.relance_id);
+    if (!p || t.id > p.id) m.set(t.relance_id, t);
+  }
+  return m;
 }
 
 /** Un dossier vu à travers son étape : tout ce qu'une ligne du tableau affiche. */

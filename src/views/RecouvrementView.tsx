@@ -2246,37 +2246,24 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
   }
 
   /**
-   * Lève le drapeau « dit avoir envoyé », et CONSIGNE CE QU'ON A VU DANS ORTHOP.
+   * Lève le drapeau « dit avoir envoyé » — le bouton « Vérifié » de la liste de travail.
    *
-   * ⚠️⚠️ `recue` n'est pas un détail d'affichage : sans lui, on sait qu'un dossier a été
-   * contrôlé mais jamais CE QU'ON Y A TROUVÉ. Or c'est toute la différence entre « elle
-   * avait raison, l'ordonnance est arrivée » et « elle a dit l'avoir envoyée et ORTHOP ne
-   * l'a toujours pas » — deux situations qui n'appellent pas la même suite, et qu'on ne
-   * peut plus distinguer trois jours plus tard.
-   *
-   * ⚠️ `undefined` = contrôle sans verdict (le bouton de l'onglet Relances, qui n'a pas la
-   * colonne ORTHOP sous les yeux). On ne fabrique alors AUCUNE note : une note vide ou
-   * approximative est pire qu'une absence de note.
+   * ⚠️ La vérification FAITE DEPUIS LE CONTRÔLE ne passe plus par ici depuis le
+   * 2026-09-23 : elle passe par `dashboard-controle`, qui lève le drapeau, consigne le
+   * verdict ORTHOP dans les notes ET signe le geste (qui, quand) dans la même requête.
+   * Ce bouton-ci, sans colonne ORTHOP sous les yeux, ne fabrique AUCUNE note : une note
+   * vide ou approximative est pire qu'une absence de note.
    */
-  async function markOrdoVerified(r: Relance, recue?: boolean) {
-    const champs: Record<string, unknown> = { ordonnance_deja_envoyee: false };
-    let notes = r.notes ?? null;
-
-    if (recue !== undefined) {
-      const jour = new Date().toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
-      const ligne = `[${jour}] Contrôle ORTHOP : ordonnance ${recue ? 'reçue' : 'PAS ENCORE reçue'}.`;
-      // ⚠️ ON CONCATÈNE. W-Update-Relance fait `SET notes = '...'` : lui passer la seule
-      // ligne du jour EFFACERAIT tout l'historique de la fiche, en silence.
-      notes = [r.notes, ligne].filter(Boolean).join('\n');
-      champs.notes = notes;
-    }
-
-    const ok = await updateRelance(user.token, r.id, champs);
-    if (ok) setRelances(prev => prev.map(x => x.id === r.id
-      ? { ...x, ordonnance_deja_envoyee: false, notes }
-      : x));
+  async function markOrdoVerified(r: Relance) {
+    const ok = await updateRelance(user.token, r.id, { ordonnance_deja_envoyee: false });
+    if (ok) setRelances(prev => prev.map(x => x.id === r.id ? { ...x, ordonnance_deja_envoyee: false } : x));
     return ok;
   }
+
+  /** Une ligne mise à jour par le Contrôle, avec ce que le SERVEUR a écrit. */
+  const majDepuisControle = useCallback((id: number, patch: Partial<Relance>) => {
+    setRelances(prev => prev.map(x => x.id === id ? { ...x, ...patch } : x));
+  }, []);
 
   async function handleDelete(id: number) {
     const ok = await deleteRelance(user.token, id);
@@ -2407,14 +2394,15 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
       {/* ── Campagnes tab ───────────────────────────────────────────────────── */}
       {/* Resultats : combien de patientes relancees ont renvoye leur ordonnance. */}
       {/* Contrôle : qui n'a été joint par personne, sur la journée choisie. LECTURE SEULE. */}
-      {/* ⚠️ `onVerifie` reçoit le MEME handler que le bouton « Vérifié » de la liste
-          de travail : un second appel à W-Update-Relance aurait fini par diverger. */}
+      {/* ⚠️ Le Contrôle écrit par `dashboard-controle` (traitements signés) et ne fait que
+          signaler ici ce que le serveur a changé sur une ligne. */}
       {activeTab === 'controle' && (
         <ControleJournee
           relances={relances}
           enPause={reglagePause ? reglagePause.en_pause : null}
           motifPause={reglagePause?.motif ?? null}
-          onVerifie={markOrdoVerified}
+          token={user.token}
+          onRelanceMaj={majDepuisControle}
         />
       )}
 
