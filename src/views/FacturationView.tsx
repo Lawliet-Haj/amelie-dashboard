@@ -1,74 +1,24 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   RefreshCw, AlertCircle, CloudDownload, Eye, X, Download,
-  CalendarClock, MessageSquare, CheckCircle, Layers, Mail, Phone, Send,
+  CalendarClock, MessageSquare, CheckCircle, Layers, Mail, Phone, Send, UserPlus,
 } from 'lucide-react';
+import { EnvoiManuelModal } from './EnvoiManuelModal';
 import type { AuthUser, Facturation, FacturationData, FacturationLot, Palier } from '../types';
 import {
   Chip, StatsBar, type VuePuce, GroupedList, type GroupeEntete,
   DataTable, thStyle, tdStyle, tdDiscret, SearchInput, BoutonPause, Portal,
 } from '../ui';
 import {
-  aujourdhuiIso, decalerJours, formatDate, formatDateLongue, formatDateTime, isFixe,
+  aujourdhuiIso, formatDate, formatDateLongue, formatDateTime, isFixe,
 } from '../lib/format';
 import { analyserSms } from '../lib/sms';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
+import { PALIERS, palierConf, datesPalier, finDeLocation } from '../lib/paliers';
 
 const API_BASE = 'https://n8n.srv778935.hstgr.cloud';
 
-/**
- * Les deux paliers de relance préventive.
- *
- * ⚠️ J-30 et J-15 sont STRICTEMENT séparés : le message envoyé ne sera pas le même
- * (premier avertissement vs rappel rapproché). Ils ont leur propre extraction, leur propre
- * onglet, leurs propres compteurs, et en base leur propre ligne — la clé de déduplication
- * `(orthop_prescription, palier)` garantit qu'une patiente peut passer par les deux sans
- * que l'un n'empêche l'autre.
- */
-/**
- * `jours` = nombre de jours entre l'envoi du SMS et la **fin de location**. Les libellés
- * J-30 / J-15 correspondent donc exactement à cet écart (arrêté avec le client le
- * 2026-08-28 : le 28/08 vise une fin de location au 27/09).
- *
- * ⚠️ Ne pas confondre avec l'« applicable du » interrogé dans ORTHOP, qui vaut toujours
- * `fin de location + 1 jour` — voir `datesPalier` ci-dessous.
- *
- * ⚠️ Décalage FIXE, pas d'arithmétique de mois : avec un décalage fixe et un lancement
- * quotidien, chaque date de fin de location est visée une fois et une seule.
- * L'arithmétique de mois créerait doublons et trous (les 29, 30 et 31 janvier tomberaient
- * tous sur le 28 février).
- *
- * Le même écart est codé côté n8n dans `Auth + Params` (`JOURS_PALIER`) : les deux
- * doivent rester d'accord, et le modal signale un désaccord s'il en survient un.
- */
-const PALIERS: { id: Palier; label: string; jours: number; teinte: string; bord: string; fond: string; texte: string }[] = [
-  { id: 'J30', label: 'J-30', jours: 30, teinte: '#c2410c', bord: '#fed7aa', fond: '#fff7ed', texte: 'Premier avertissement, 30 jours avant la fin de location.' },
-  { id: 'J15', label: 'J-15', jours: 15, teinte: '#1d4ed8', bord: '#bfdbfe', fond: '#eff6ff', texte: 'Rappel rapproché, 15 jours avant la fin de location.' },
-];
-const palierConf = (p: Palier) => PALIERS.find(x => x.id === p) ?? PALIERS[0];
-
-/**
- * Deux dates à ne JAMAIS confondre :
- *
- *  - **fin de location** = `reference + N jours` — la date annoncée dans le SMS,
- *    celle que lit la patiente (« votre ordonnance prendra fin le … »).
- *  - **applicable du**   = `fin de location + 1 jour` — la date interrogée dans ORTHOP,
- *    et celle stockée dans `facturation.date_echeance`.
- *
- * Le décalage vient du champ « Fin loc. » de l'écran ORTHOP, qui donne J+1 : filtrer
- * Fin loc au 25/08 renvoie les prescriptions applicables du 26/08.
- *
- * ⚠️ Le même calcul est fait côté n8n (`Auth + Params`). Les deux doivent concorder —
- * le modal le vérifie et signale un désaccord plutôt que de le supposer.
- */
-function datesPalier(reference: string, jours: number) {
-  return { fin: decalerJours(reference, jours), applicable: decalerJours(reference, jours + 1) };
-}
-
-/** Fin de location déduite d'une ligne en base, où `date_echeance` est l'« applicable du ». */
-function finDeLocation(dateEcheance: string | null | undefined): string {
-  return dateEcheance ? decalerJours(dateEcheance, -1) : '';
-}
+// Paliers et dates : vivent dans `src/lib/paliers.ts`, partagés avec l'envoi manuel.
 
 // ─── API ──────────────────────────────────────────────────────────────────────
 
@@ -890,6 +840,8 @@ export function FacturationView({ user }: { user: AuthUser }) {
   const [reference, setReference] = useState(aujourdhuiIso());
   const [modal, setModal]         = useState<Palier | null>(null);
   const [modalEnvoi, setModalEnvoi] = useState<{ palier: Palier; canal: Canal; echeance?: string | null } | null>(null);
+  /** L'envoi manuel : le palier depuis lequel on l'a ouvert (modifiable dans la fenêtre). */
+  const [modalManuel, setModalManuel] = useState<Palier | null>(null);
   const [onglet, setOnglet]       = useState<Palier | 'lots'>('J30');
   /**
    * INTERRUPTEUR DE PAUSE du module. Coupe les envois AUTOMATIQUES (SMS et mail des crons)
@@ -1367,6 +1319,13 @@ export function FacturationView({ user }: { user: AuthUser }) {
                     <Mail size={14} /> Mail{restantsMail > 0 ? ` (${restantsMail})` : ''}
                   </button>
                 </div>
+                {/* ⚠️ Pour les patientes ABSENTES des listes ORTHOP (2026-09-23). Même SMS que
+                    l'envoi automatique, même chemin d'envoi, mêmes garde-fous. */}
+                <button className="btn btn-ghost" onClick={() => setModalManuel(p.id)}
+                  title={`Saisir ou coller des patientes absentes de la liste et leur envoyer le SMS ${p.label}`}
+                  style={{ justifyContent: 'center', borderStyle: 'dashed' }}>
+                  <UserPlus size={14} /> Ajouter des patientes à la main
+                </button>
               </div>
             </div>
           );
@@ -1600,6 +1559,14 @@ export function FacturationView({ user }: { user: AuthUser }) {
         />
       )}
 
+      {modalManuel && (
+        <EnvoiManuelModal
+          token={user.token}
+          palierInitial={modalManuel}
+          onClose={() => setModalManuel(null)}
+          onFini={charger}
+        />
+      )}
       {modalEnvoi && (
         <EnvoiModal
           token={user.token}
