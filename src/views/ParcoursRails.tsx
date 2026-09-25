@@ -44,10 +44,10 @@ const LIBELLE_ETAT: Record<EtatRail, string> = {
 };
 
 const TON_ACTION: Record<string, Ton> = {
-  actif: 'ok', 'a-creer': 'attente', manuel: 'encours', retire: 'neutre',
+  actif: 'ok', essai: 'encours', 'a-creer': 'attente', manuel: 'encours', retire: 'neutre',
 };
 const LIBELLE_ACTION: Record<string, string> = {
-  actif: 'en service', 'a-creer': 'à créer', manuel: 'manuel', retire: 'retiré',
+  actif: 'en service', essai: 'en essai', 'a-creer': 'à créer', manuel: 'manuel', retire: 'retiré',
 };
 
 export interface ComptesFacturation { J30?: number; J15?: number }
@@ -145,6 +145,11 @@ export function ParcoursRails({
                    ton={global.aTraiter > 0 ? 'echec' : undefined} />
           <Agregat n={global.couvertes} libelle="ordonnance en cours" ton="ok2" />
           <Agregat n={global.sorties} libelle="ordonnances reçues" ton="ok" />
+          {/* Un terme hors de `actives`, comme les ordonnances reçues : l'afficher, sinon les
+              totaux ne bouclent plus et ressemblent à des dossiers égarés. */}
+          {global.sortiesManuelles > 0 && (
+            <Agregat n={global.sortiesManuelles} libelle="sorties à la main" />
+          )}
         </div>
       </div>
 
@@ -393,6 +398,10 @@ function PanneauRail({
              aide="Une ordonnance couvre encore la période : rien à leur demander. Elles reviennent d’elles-mêmes à son expiration." />
       <Ligne libelle="Ordonnance reçue" n={c?.sortis ?? 0} ton="ok"
              aide="Sortis définitivement : ORTHOP ne réclame plus la prescription." />
+      {(c?.sortiesManuelles ?? 0) > 0 && (
+        <Ligne libelle="Sorties du parcours à la main" n={c!.sortiesManuelles}
+               aide="L'équipe a arrêté les relances vers ces patientes (bouton du panneau de la patiente). Réversible." />
+      )}
       <Ligne libelle="Joints par écrit dans ce rail" n={c?.jointsEcrit ?? 0} ton="ok2"
              aide="SMS ou mail livré DEPUIS l'entrée dans ce rail. Un écrit reçu à une étape précédente ne compte pas ici." />
       <Ligne libelle="Joints à la voix dans ce rail" n={c?.jointsVoix ?? 0} ton="encours"

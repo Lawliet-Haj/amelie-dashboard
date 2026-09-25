@@ -140,6 +140,14 @@ export interface Relance {
   // ⚠️ À la différence de `resolu_le`, ce n'est PAS une sortie du parcours : c'est une
   // SUSPENSION. Quand la date est passée, la ligne redevient relançable d'elle-même.
   fin_application?: string | null;
+  // ── LA SORTIE MANUELLE DU PARCOURS (2026-09-25) ───────────────────────────────
+  // Posée par l'équipe (bouton « Sortir du parcours » du panneau de la patiente) : plus
+  // aucun appel, SMS ni mail de relance — les crons ET les boutons la lisent. RÉVERSIBLE.
+  // ⚠️ Distincte de `resolu_le`, que l'extraction ORTHOP recalcule chaque matin : poser
+  // `resolu_le` à la main aurait été levé dès le lendemain.
+  sorti_le?: string | null;
+  sorti_par?: string | null;
+  sorti_motif?: string | null;
   // ⚠️ Une ligne SANS numéro de prescription ne pourra JAMAIS être déclarée résolue. Les
   // 153 lignes de la cohorte Excel du 25/08 sont dans ce cas, et elles sont toutes déjà
   // jointes par écrit : ce ne sont pas des dossiers en retard, ce sont des dossiers sans

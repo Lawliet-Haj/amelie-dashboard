@@ -35,7 +35,7 @@
  * cosmétique — mesuré le jour même, le rail J+1 compte **86** dossiers avec le bon écart
  * contre **10** sans.
  */
-import { aujourdhuiIso, decalerJours, ecartJours, isFixe, jourLocal, jourSemaineIso } from './format';
+import { aujourdhuiIso, decalerJours, ecartJours, formatDate, isFixe, jourLocal } from './format';
 import type { Relance } from '../types';
 
 export type SourceRail = 'facturation' | 'relances';
@@ -54,7 +54,13 @@ export interface ActionRail {
   canal: CanalRail;
   libelle: string;
   detail: string;
-  etat: 'actif' | 'a-creer' | 'manuel' | 'retire';
+  /**
+   * `essai` — l'agent existe et se teste par un appel vers SON numéro (« Tester cette
+   * étape »), mais AUCUN automate ne tourne : ni cron, ni déclenchement depuis la liste.
+   * ⚠️ Ne compte PAS comme `actif` : `mailDansLeRail()` et les listes de travail ne
+   * regardent que `actif`, et c'est voulu — une étape en essai n'appelle personne.
+   */
+  etat: 'actif' | 'essai' | 'a-creer' | 'manuel' | 'retire';
 }
 
 export interface Rail {
@@ -89,6 +95,14 @@ export interface Rail {
   canaux: CanalRail[];
   /** Le rail tourne-t-il aujourd'hui ? Un rail inactif s'affiche « prévu », pas « en panne ». */
   actif: boolean;
+  /**
+   * Premier jour où l'étape a réellement tourné (AAAA-MM-JJ). Absent = depuis toujours.
+   *
+   * ⚠️ Sert au CONTRÔLE d'une journée PASSÉE : regarder le 21/09 avec le J+14 « actif »
+   * ferait apparaître soixante patientes « rien tenté » sur une étape qui n'existait pas
+   * encore. `actif` dit ce qui tourne AUJOURD'HUI ; cette date dit depuis quand.
+   */
+  enServiceDepuis?: string;
   etat: EtatRail;
   /** Une ou deux phrases : ce que cette étape fait, et pourquoi. */
   resume: string;
@@ -161,20 +175,25 @@ export const RAILS: Rail[] = [
       + 'reçu un après son appel du R3.',
     porteur: 'Amélie Sortant J+7 — agent IA dédié',
     actions: [
-      { canal: 'appel', libelle: 'Appel (2) par l’agent IA dédié', detail: 'Cron 12h30 → 13h59, dix appels par passage — MÊME créneau que R3 depuis le 2026-09-11', etat: 'actif' },
+      { canal: 'appel', libelle: 'Appel (2) par l’agent IA dédié', detail: 'Cron 12h30 → 13h55, à la minute, CINQ appels simultanés — MÊME créneau que R3 depuis le 2026-09-11', etat: 'actif' },
       { canal: 'sms',   libelle: 'SMS (2) après l’appel', detail: 'Envoyé par le post-call J+7 selon l’issue — jamais aux fixes', etat: 'actif' },
       { canal: 'mail',  libelle: 'Email (4) via Brevo', detail: 'Retiré du parcours — décision client du 2026-09-09', etat: 'retire' },
     ],
   },
   {
     code: 'R5', libelle: 'J+14', titre: 'Bascule vers le contentieux',
-    source: 'relances', jour: 14, canaux: ['mail', 'appel'], actif: false, etat: 'prevu',
-    resume: 'Le ton change : le mail part désormais de contentieux@. Un troisième appel suit.',
-    porteur: 'Agent IA à créer \u2014 ton \u00ab contentieux \u00bb',
+    source: 'relances', jour: 14, canaux: ['appel', 'sms', 'mail'], actif: true, enServiceDepuis: '2026-09-26', etat: 'actif',
+    resume: 'Le ton change : troisième appel, qui annonce le service contentieux, puis le même SMS '
+      + 'qu’au J+7 et le mail « dernière relance » (modèle 365).',
+    // ✅ EN SERVICE depuis le 2026-09-26 (décision client du 25/09). Agent EL dédié
+    // `agent_0001m3btn3s0efqsqkgjxy9f1536` (prompt `Amelie_sortant_J14.md`), son PROPRE post-call
+    // (`el-post-call-j14`), son déclenchement (`dashboard-trigger-call-j14`) et son cron
+    // (`EL - Recouvrement J14`) — jumeaux de ceux du J+7, à l'écart 13.
+    porteur: 'Amélie Sortant J+14 \u2014 agent IA dédié',
     actions: [
-      { canal: 'sms',   libelle: 'SMS (3)',                        detail: 'Retiré du parcours',                      etat: 'retire' },
-      { canal: 'mail',  libelle: 'Email (5) via Brevo',            detail: 'Depuis contentieux@tire-lait-express.fr', etat: 'a-creer' },
-      { canal: 'appel', libelle: 'Appel (3) par l\u2019agent IA', detail: 'Suit le mail',                            etat: 'a-creer' },
+      { canal: 'appel', libelle: 'Appel (3) par l\u2019agent IA dédié', detail: 'Cron 12h30 \u2192 13h55, à la minute, DEUX appels simultanés \u2014 volume faible, annonce le service contentieux', etat: 'actif' },
+      { canal: 'sms',   libelle: 'SMS (3) après l’appel',          detail: 'Même texte qu’au J+7 — envoyé par le post-call J+14 selon l’issue, jamais aux fixes', etat: 'actif' },
+      { canal: 'mail',  libelle: 'Email (5) via Brevo',            detail: 'Modèle 365 « dernière relance » après chaque appel — affiché contentieux@, envoyé depuis info@', etat: 'actif' },
     ],
   },
   {
@@ -219,6 +238,15 @@ export const RAILS: Rail[] = [
 ];
 
 export const RAILS_RELANCES = RAILS.filter(r => r.source === 'relances');
+
+/**
+ * L'étape tournait-elle CE JOUR-LÀ ? `actif` ne le dit que pour aujourd'hui.
+ *
+ * ⚠️ Comparaison de chaînes AAAA-MM-JJ : l'ordre alphabétique est l'ordre des dates.
+ */
+export function enServiceLe(rail: Rail, jour: string): boolean {
+  return rail.actif && (!rail.enServiceDepuis || jour >= rail.enServiceDepuis);
+}
 export const RAILS_FACTURATION = RAILS.filter(r => r.source === 'facturation');
 
 export function railParCode(code: string): Rail | undefined {
@@ -261,29 +289,22 @@ export function surLEtapeAujourdhui(
 ): boolean {
   const ecart = ecartEcheance(rail);
 
-  // ⚠️⚠️ LE WEEK-END EST REPORTÉ AU LUNDI (2026-09-18, demande du client).
-  // Plus aucun appel, SMS ni mail le samedi et le dimanche : le LUNDI, chaque étape
-  // couvre TROIS jours d'échéance — le sien, plus les deux qui ont été sautés. Le reste
-  // de la semaine, un seul jour comme avant.
+  // ⚠️⚠️ UN JOUR, ET UN SEUL, SEPT JOURS SUR SEPT (2026-09-25, demande du client).
+  // Du 18 au 25/09, le week-end était reporté au lundi, qui couvrait alors trois jours
+  // d'échéance. Revirement : « les appels et SMS reprennent le week-end, mais on ne reporte
+  // plus à lundi ». Chaque jour appelle sa propre cohorte, samedi et dimanche compris.
   //
-  // ⚠️⚠️ CETTE RÈGLE VIT À CINQ ENDROITS, à modifier ENSEMBLE — ici, et côté n8n dans
-  // `PG Cibles Appels`, `PG Bilan Jour` (cron J+1), `PG Cibles J7`, `PG Bilan J7`, sous
-  // la forme `EXTRACT(ISODOW FROM CURRENT_DATE) = 1`. Si l'écran et les crons cessent de
-  // compter pareil, la tuile annonce un chiffre que personne ne servira : c'est
+  // ⚠️⚠️ CETTE RÈGLE VIT AUSSI CÔTÉ n8n : `PG Cibles Appels`, `PG Bilan Jour`,
+  // `PG Cibles Relance` (cron J+1), `PG Cibles J7`, `PG Bilan J7`, `PG Cibles Relance J7`,
+  // et leurs jumeaux J+14 — `date_echeance = CURRENT_DATE - écart`. Si l'écran et les crons
+  // cessent de compter pareil, la tuile annonce un chiffre que personne ne servira : c'est
   // exactement le défaut constaté le 2026-09-16.
   //
-  // ⚠️ Elle REMPLACE le rattrapage ponctuel du 16/09, qui s'était effacé tout seul comme
-  // prévu. On n'empile pas deux fenêtres : une seule règle, permanente.
+  // ⚠️ `auj` reste un paramètre : c'est lui qui rend l'écran capable de regarder un autre jour.
   //
-  // ⚠️ Les fenêtres des étapes restent DISJOINTES — R3 : 0-2, R4 : 6-8, R5 : 13-15,
-  // R6 : 20-22, R7 : 29-31, R8 : 32-34, R9 : 39-41. C'est la condition pour que
-  // `railDeRelance()` rende une réponse unique (son `find` prendrait sinon la première).
-  // Toute nouvelle étape doit vérifier cette disjonction.
-  //
-  // ⚠️ Le samedi et le dimanche, la cohorte du jour reste AFFICHÉE : on ne l'appelle pas,
-  // mais celui qui regarde ce samedi-là doit voir qui était attendu. C'est l'écran de
-  // contrôle qui dit que c'est le week-end, pas cette fonction qui efface la population.
-  if (jourSemaineIso(auj) === 1) return j >= ecart && j <= ecart + 2;
+  // ⚠️ Le contrôle du LUNDI reprend le samedi et le dimanche (personne ne contrôle le
+  // week-end) : c'est l'écran de contrôle qui empile ces trois journées, pas cette fonction.
+  void auj;
   return j === ecart;
 }
 /**
@@ -393,7 +414,7 @@ export function lignesDuRail(
     // ⚠️ C'est une SUSPENSION, pas une sortie : quand la couverture expire, la ligne
     // revient d'elle-même dans le rail qu'elle atteint alors. Six dossiers sont dans ce
     // cas (couverture s'achevant avant J+40) — voir `couverteAujourdhui`.
-    if (estSortie(r) || couverteAujourdhui(r, auj) || !r.date_echeance) return false;
+    if (horsParcours(r) || couverteAujourdhui(r, auj) || !r.date_echeance) return false;
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) return false;
     if (portee === 'toutes') return true;
@@ -418,6 +439,25 @@ export function ecartDeRelance(r: Relance, auj: string = aujourdhuiIso()): numbe
  */
 export function estSortie(r: Relance): boolean {
   return Boolean(r.resolu_le);
+}
+
+/**
+ * ── LA SORTIE MANUELLE ────────────────────────────────────────────────────────
+ * L'équipe a sorti la patiente du parcours (dossier terminé, matériel rendu, demande de la
+ * patiente…) : plus aucun appel, SMS ni mail de relance. Le serveur applique la même règle
+ * dans les crons et derrière chaque bouton (`sorti_le IS NULL`).
+ *
+ * ⚠️ Ce n'est PAS `estSortie()` : celle-ci veut dire « ORTHOP ne la réclame plus » et se
+ * lit « ordonnance reçue » partout. Une sortie manuelle est une DÉCISION, réversible, et
+ * elle a son propre compteur — la ranger dans « ordonnances reçues » mentirait.
+ */
+export function sortieManuelle(r: Relance): boolean {
+  return Boolean(r.sorti_le);
+}
+
+/** Plus rien à faire dans le parcours, quelle qu'en soit la raison. */
+export function horsParcours(r: Relance): boolean {
+  return estSortie(r) || sortieManuelle(r);
 }
 
 /**
@@ -461,6 +501,12 @@ export function couverteAujourdhui(r: Relance, auj: string = aujourdhuiIso()): b
  * l'écran annonce un travail que le serveur refuse — le défaut que ce projet combat.
  */
 export function raisonDeNePasSolliciter(r: Relance, auj: string = aujourdhuiIso()): string | null {
+  // La sortie manuelle d'abord : c'est une décision de l'équipe, et elle prime sur tout —
+  // même ordre que le serveur (`Build Pre-Update SQL`, `Prepare` de l'envoi manuel).
+  if (sortieManuelle(r)) {
+    return 'Sortie du parcours le ' + formatDate(jourLocal(r.sorti_le)) + (r.sorti_par ? ' par ' + r.sorti_par : '')
+      + (r.sorti_motif ? ' — ' + r.sorti_motif : '');
+  }
   if (estSortie(r)) return 'Ordonnance déjà renouvelée — ORTHOP ne la réclame plus';
   if (couverteAujourdhui(r, auj)) return 'Ordonnance en cours jusqu au ' + String(r.fin_application).slice(0, 10);
   return null;
@@ -576,7 +622,7 @@ export function aRattraper(r: Relance, auj: string = aujourdhuiIso()): boolean {
   // à doubler l'automate, donc à rappeler une patiente déjà appelée quelques minutes plus
   // tôt — le délai de 45 minutes du cron ne protège pas un lancement manuel.
   if (r.date_echeance >= auj) return false;
-  if (estSortie(r)) return false;                                  // ordonnance reçue
+  if (horsParcours(r)) return false;                               // reçue, ou sortie à la main
   if ((r.nb_tentatives ?? 0) > 0 || r.dernier_appel) return false; // jamais appelée
   // Un statut posé à la main (« Marquer répondeur ») compte comme un traitement, même sans
   // appel enregistré : `quickOutcome` permet ce cas depuis le tableau.
@@ -650,6 +696,8 @@ export interface ComptesRail {
   dansLeRail: number;
   /** Sortis du parcours : ordonnance renouvelée, constatée dans ORTHOP. */
   sortis: number;
+  /** Sorties du parcours À LA MAIN par l'équipe — une décision, pas une ordonnance reçue. */
+  sortiesManuelles: number;
   /**
    * SUSPENDUES : une ordonnance court encore, il n'y a rien à leur demander.
    * ⚠️ Ce n'est pas une sortie : quand la couverture expire elles reviennent d'elles-mêmes.
@@ -659,7 +707,7 @@ export interface ComptesRail {
    * Le travail RÉEL de cette étape : ni sorties, ni couvertes.
    * ⚠️⚠️ C'est exactement `lignesDuRail(lignes, rail, 'jour', auj).length` — le chiffre
    * de la tuile et celui de la liste qu'elle ouvre ne peuvent plus diverger.
-   * ⚠️ `dansLeRail = sortis + couvertes + actifs`.
+   * ⚠️ `dansLeRail = sortis + sortiesManuelles + couvertes + actifs`.
    */
   actifs: number;
   /** Parmi les actifs : déjà joints par écrit DEPUIS leur entrée dans ce rail. */
@@ -683,6 +731,8 @@ export interface ComptesGlobaux {
   actives: number;
   /** Sorties du parcours : ordonnance renouvelée, constatée dans ORTHOP. */
   sorties: number;
+  /** Sorties du parcours à la main par l'équipe. Hors de `actives`, comme `sorties`. */
+  sortiesManuelles: number;
   /** Sur une des neuf étapes aujourd'hui — le travail programmé du jour, couvertes exclues. */
   surUneEtape: number;
   /** Suspendues : une ordonnance court encore. Aucun rendez-vous tant qu’elle court. */
@@ -712,12 +762,14 @@ export interface ComptesGlobaux {
 export function comptesGlobaux(
   lignes: Relance[], auj: string = aujourdhuiIso(),
 ): ComptesGlobaux {
-  let actives = 0, sorties = 0, surUneEtape = 0, entreDeuxEtapes = 0, aTraiter = 0, couvertes = 0;
+  let actives = 0, sorties = 0, sortiesManuelles = 0, surUneEtape = 0, entreDeuxEtapes = 0, aTraiter = 0, couvertes = 0;
   for (const r of lignes) {
     if (!r.date_echeance) continue;
     const j = ecartJours(r.date_echeance, auj);
     if (!Number.isFinite(j) || j < 0) continue;   // pas encore entrée dans le parcours
     if (estSortie(r)) { sorties++; continue; }
+    // Après l'ORTHOP : une ordonnance reçue reste comptée comme telle, même sortie à la main.
+    if (sortieManuelle(r)) { sortiesManuelles++; continue; }
     actives++;
     // ⚠️ Une couverte est comptée ACTIVE (elle reviendra) mais sur AUCUNE étape.
     if (couverteAujourdhui(r, auj)) { couvertes++; continue; }
@@ -729,7 +781,7 @@ export function comptesGlobaux(
       entreDeuxEtapes++;
     }
   }
-  return { actives, sorties, surUneEtape, entreDeuxEtapes, aTraiter, couvertes };
+  return { actives, sorties, sortiesManuelles, surUneEtape, entreDeuxEtapes, aTraiter, couvertes };
 }
 
 export function comptesDuRail(
@@ -742,9 +794,12 @@ export function comptesDuRail(
   // Demande du client le 2026-09-16 : « ceux qui sont couverts ne doivent pas être dans
   // les rails ». `lignesDuRail()` les écartait déjà ; ces compteurs, non — la tuile
   // annonçait 75 au J+1 et sa liste en montrait 180.
+  // ⚠️ QUATRE parts depuis le 2026-09-25 : la sortie manuelle vient après l'ORTHOP et avant
+  // la couverture. `actifs` reste exactement `lignesDuRail(…, 'jour')`, qui écarte les deux.
   const sortis   = dedans.filter(r => estSortie(r));
-  const couvertes = dedans.filter(r => !estSortie(r) && couverteAujourdhui(r, auj));
-  const actifs   = dedans.filter(r => !estSortie(r) && !couverteAujourdhui(r, auj));
+  const manuelles = dedans.filter(r => !estSortie(r) && sortieManuelle(r));
+  const couvertes = dedans.filter(r => !horsParcours(r) && couverteAujourdhui(r, auj));
+  const actifs   = dedans.filter(r => !horsParcours(r) && !couverteAujourdhui(r, auj));
   const jointsEcrit = actifs.filter(r => jointParEcritDansLeRail(r, rail, auj));
   const jointsVoix = actifs.filter(r => jointVoixDansLeRail(r, rail, auj));
 
@@ -752,6 +807,7 @@ export function comptesDuRail(
     rail,
     dansLeRail: dedans.length,
     sortis: sortis.length,
+    sortiesManuelles: manuelles.length,
     couvertes: couvertes.length,
     actifs: actifs.length,
     jointsEcrit: jointsEcrit.length,

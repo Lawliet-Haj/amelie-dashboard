@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, type ReactNode } from 'react';
+import { Fragment, useState, useMemo, useEffect, useCallback, type ReactNode } from 'react';
 import {
   CheckCircle, AlertTriangle, CalendarDays, PauseCircle, Clock, BookOpen, UserCheck, History,
   Phone, MessageSquare, Mail, ShieldCheck, ChevronRight, ChevronDown, ClipboardCheck,
@@ -6,8 +6,8 @@ import {
 import type { Relance } from '../types';
 import { Chip, DataTable, tdStyle, tdDiscret, TranscriptPanel, BoutonTranscript, SearchInput } from '../ui';
 import {
-  RAILS_RELANCES, lignesDuRail, jointVoixDansLeRail, jointParEcritDansLeRail,
-  railAtteint, estSortie, couverteAujourdhui, PLAFOND_TENTATIVES, type Rail,
+  RAILS_RELANCES, enServiceLe, lignesDuRail, jointVoixDansLeRail, jointParEcritDansLeRail,
+  railAtteint, estSortie, horsParcours, sortieManuelle, couverteAujourdhui, PLAFOND_TENTATIVES, type Rail,
 } from '../lib/rails';
 // ⚠️ Le JUGEMENT vit dans `src/lib/controle.ts`, pas ici : c'est ce qui permet de
 // l'éprouver sur les vraies données sans charger React. Cette vue ne fait que DESSINER
@@ -20,7 +20,7 @@ import { traiterLigne, traitementsDuJour, type Traitement } from '../lib/control
 import { rechercherPatientes } from '../lib/parcours';
 import { ParcoursPatiente } from './ParcoursPatiente';
 import {
-  aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue, formatDateTime,
+  aujourdhuiIso, decalerJours, jourLocal, jourSemaineIso, formatDate, formatDateLongue, formatDateTime, formatJourCourt,
 } from '../lib/format';
 
 /**
@@ -31,6 +31,8 @@ import {
  * comme non joint — ce n'est pas un manquement, c'est un contrôle prématuré.
  */
 const FIN_FENETRE_HHMM = 1430;
+/** Une journée sans aucun geste consigné (partagé : ne jamais le modifier). */
+const AUCUN_GESTE: ReadonlyMap<number, Traitement> = new Map();
 function hhmmParis(): number {
   const h = new Date().toLocaleTimeString('fr-FR', {
     timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit', hour12: false,
@@ -102,9 +104,9 @@ function BadgeRail({ rail }: { rail: Rail | null }) {
 /**
  * ROUGE = action requise · VERT = rien à faire. La lecture demandée par le client.
  *
- * ⚠️⚠️ ELLE SE TAIT QUAND LE CONTEXTE EXPLIQUE TOUT. Un week-end, une pause, ou une
- * journée qui n'a pas encore atteint 12h30 : la patiente n'a rien reçu, et c'est
- * parfaitement normal. Le juge est `action.gravite` : les trois cas neutres sont
+ * ⚠️⚠️ ELLE SE TAIT QUAND LE CONTEXTE EXPLIQUE TOUT. Une pause, ou une journée qui n'a
+ * pas encore atteint la fin de ses appels : la patiente n'a rien reçu, et c'est
+ * parfaitement normal. Le juge est `action.gravite` : les cas neutres sont
  * exactement ceux que l'escalier de `actionDuDossier` range en `neutre`.
  */
 function PastilleEtat({ b }: { b: Bilan }) {
@@ -287,12 +289,12 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   const [resteOuvert, setResteOuvert] = useState(false);
   const [chiffresOuverts, setChiffresOuverts] = useState(false);
   /**
-   * Les gestes déjà posés, le dernier par dossier — et LA JOURNÉE à laquelle ils
-   * appartiennent. Tant que la lecture de la journée affichée n'est pas revenue, on est
-   * « en chargement » : c'est déduit, pas posé, donc impossible d'afficher les traitements
-   * d'hier sur la journée d'aujourd'hui pendant l'aller-retour.
+   * Les gestes déjà posés, le dernier par dossier, RANGÉS PAR JOURNÉE — et la liste des
+   * journées lues (`cle`). Tant que la lecture des journées affichées n'est pas revenue, on
+   * est « en chargement » : c'est déduit, pas posé, donc impossible d'afficher les
+   * traitements d'hier sur la journée d'aujourd'hui pendant l'aller-retour.
    */
-  const [lus, setLus] = useState<{ jour: string; etat: 'ok' | 'erreur'; map: Map<number, Traitement> } | null>(null);
+  const [lus, setLus] = useState<{ cle: string; etat: 'ok' | 'erreur'; parJour: Map<string, Map<number, Traitement>> } | null>(null);
   const [recherche, setRecherche] = useState('');
   const [parcours, setParcours] = useState<{ ids: number[]; nom: string } | null>(null);
   // Stable : le panneau s'abonne à Échap avec, et le parent se redessine toutes les 30 s.
@@ -306,58 +308,89 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    * ⚠️ Si la lecture échoue, on le DIT : sans traitements, toutes les lignes traitées
    * redeviendraient à faire et l'équipe les retraiterait.
    */
+  /**
+   * ⚠️⚠️ LE LUNDI, LE CONTRÔLE REPREND LE WEEK-END (2026-09-25, demande du client).
+   * Les appels et les écrits partent désormais le samedi et le dimanche, mais personne ne
+   * contrôle ces jours-là : le lundi, l'écran empile SAMEDI, DIMANCHE et LUNDI. Chaque ligne
+   * garde SA journée (`Bilan.jour`) — un geste posé lundi sur une ligne de samedi est
+   * consigné sur la journée de samedi, là où la ligne l'attendait.
+   *
+   * ⚠️ Une patiente ne peut pas figurer deux fois sur trois jours consécutifs : les étapes
+   * sont à 0, 6, 13, 20, 29, 32 et 39 jours de son échéance, jamais moins de trois jours
+   * d'écart. Il n'y a donc pas de doublon à dédoublonner.
+   *
+   * ⚠️ « Hier » le lundi montre le dimanche seul ; un autre jour, une seule journée.
+   */
+  const joursControles = useMemo(
+    () => (jourSemaineIso(jour) === 1 ? [decalerJours(jour, -2), decalerJours(jour, -1), jour] : [jour]), [jour]);
+  const cleJours = joursControles.join(',');
+  const multiJours = joursControles.length > 1;
+
   useEffect(() => {
     let vivant = true;
-    traitementsDuJour(token, jour).then(r => {
+    const jours = cleJours.split(',');
+    Promise.all(jours.map(j => traitementsDuJour(token, j))).then(rs => {
       if (!vivant) return;
-      setLus(r.ok
-        ? { jour, etat: 'ok', map: dernierTraitementParDossier(r.data) }
-        : { jour, etat: 'erreur', map: new Map() });
+      const parJour = new Map<string, Map<number, Traitement>>();
+      rs.forEach((r, i) => parJour.set(jours[i], r.ok ? dernierTraitementParDossier(r.data) : new Map()));
+      // ⚠️ Une seule journée illisible suffit à tout marquer en erreur : sans ses gestes, des
+      // lignes déjà traitées réapparaîtraient à faire et seraient retraitées.
+      setLus({ cle: cleJours, etat: rs.every(r => r.ok) ? 'ok' : 'erreur', parJour });
     });
     return () => { vivant = false; };
-  }, [token, jour]);
-  const etatTraitements: 'chargement' | 'ok' | 'erreur' = lus && lus.jour === jour ? lus.etat : 'chargement';
-  const traitements = useMemo(
-    () => (lus && lus.jour === jour ? lus.map : new Map<number, Traitement>()), [lus, jour]);
+  }, [token, cleJours]);
+  const etatTraitements: 'chargement' | 'ok' | 'erreur' = lus && lus.cle === cleJours ? lus.etat : 'chargement';
+  const traitementsParJour = useMemo(
+    () => (lus && lus.cle === cleJours ? lus.parJour : new Map<string, Map<number, Traitement>>()), [lus, cleJours]);
+  const gestesDu = useCallback(
+    (j: string): ReadonlyMap<number, Traitement> => traitementsParJour.get(j) ?? AUCUN_GESTE, [traitementsParJour]);
+  const estTraitee = useCallback((b: Bilan) => gestesDu(b.jour).has(b.r.id), [gestesDu]);
   /** Changer de journée referme tout formulaire ouvert : il visait une autre journée. */
   const choisirJour = (j: string) => { setJour(j); setFormOuvert(null); };
 
-  /**
-   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18). Les crons d'appel ne tournent
-   * que du lundi au vendredi. On ne masque rien : seul le verdict cesse d'alerter.
-   */
-  const estWeekEnd = jourSemaineIso(jour) >= 6;
-  const journeeEnCours = jour === ajd && hhmmParis() < FIN_FENETRE_HHMM;
+  /** La journée CHOISIE est-elle celle d'aujourd'hui, avant la fin de la fenêtre d'appels ? */
+  const avantFinFenetre = hhmmParis() < FIN_FENETRE_HHMM;
+  const journeeEnCours = jour === ajd && avantFinFenetre;
 
   /**
-   * Un bilan par patiente, groupé par étape, pour la journée choisie.
+   * Un bilan par patiente, groupé par étape, pour la ou les journées contrôlées.
    *
-   * ⚠️ `lignesDuRail` porte déjà les deux exclusions qui comptent : les ordonnances REÇUES
-   * et les patientes COUVERTES par une ordonnance en cours.
+   * ⚠️ `lignesDuRail` porte déjà les exclusions qui comptent : les ordonnances REÇUES, les
+   * patientes COUVERTES par une ordonnance en cours, et les SORTIES du parcours.
    *
-   * ⚠️ Toutes les fonctions prennent `jour` en paramètre — c'est ce qui rend l'écran
-   * capable de regarder hier. Aucune date n'est recalculée ici.
+   * ⚠️ Toutes les fonctions prennent la journée en paramètre — c'est ce qui rend l'écran
+   * capable de regarder hier, ou d'empiler le week-end. Aucune date n'est recalculée ici.
    */
   const parEtape = useMemo(() => RAILS_RELANCES.map(rail => {
-    const ctx: ContexteJournee = { estWeekEnd, enPause, journeeEnCours };
+    // ⚠️ Une étape n'est jugée que les jours où elle TOURNAIT (`enServiceLe`) : le J+14 n'a
+    // d'agent que depuis le 26/09, et le contrôle d'une journée antérieure ne doit pas lui
+    // reprocher des appels qui n'existaient pas. Les autres jours, ses dossiers sont comptés à
+    // part (`horsService`), comme ceux des étapes pas encore automatisées.
+    const joursEnService = joursControles.filter(j => enServiceLe(rail, j));
+    const horsService = joursControles.filter(j => !enServiceLe(rail, j))
+      .reduce((n, j) => n + lignesDuRail(relances, rail, 'jour', j).length, 0);
     // ⚠️ Le tri ne change AUCUN compteur : l'ordre n'entre dans aucun total.
-    const bilans = parOrdreDAction(
-      lignesDuRail(relances, rail, 'jour', jour).map(r => bilanDossier(r, rail, jour, ctx)), traitements);
+    const bilans = joursEnService.flatMap(j => {
+      const ctx: ContexteJournee = { enPause, journeeEnCours: j === ajd && avantFinFenetre };
+      return parOrdreDAction(lignesDuRail(relances, rail, 'jour', j).map(r => bilanDossier(r, rail, j, ctx)), gestesDu(j));
+    });
     return {
       rail,
+      enService: joursEnService.length > 0,
+      horsService,
       bilans,
       surEtape: bilans.length,
       jointes: bilans.filter(b => b.jointe).length,
-      voix: bilans.filter(b => jointVoixDansLeRail(b.r, rail, jour)).length,
-      ecrit: bilans.filter(b => jointParEcritDansLeRail(b.r, rail, jour)).length,
+      voix: bilans.filter(b => jointVoixDansLeRail(b.r, rail, b.jour)).length,
+      ecrit: bilans.filter(b => jointParEcritDansLeRail(b.r, rail, b.jour)).length,
       manques: bilans.filter(b => !b.jointe).length,
       // Le sous-ensemble alarmant : personne n'a rien tenté, sur aucun canal.
       jamaisTente: bilans.filter(b => !b.jointe && b.rienTente).length,
       // ⚠️ Les déclarations sont comptées À PART (elles ne dépendent pas de la journée) :
       // ici, seulement les lignes que la file range sous « Sur la journée ».
-      aTraiter: bilans.filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'a-traiter').length,
+      aTraiter: bilans.filter(b => rangeeDeLaLigne(b, estTraitee(b)) === 'a-traiter').length,
     };
-  }), [relances, jour, estWeekEnd, enPause, journeeEnCours, traitements]);
+  }), [relances, joursControles, enPause, ajd, avantFinFenetre, gestesDu, estTraitee]);
 
   /**
    * LES PATIENTES QUI DISENT AVOIR ENVOYÉ LEUR ORDONNANCE, et que personne n'a encore
@@ -375,7 +408,8 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    * c'est la plus ancienne des déclarations, celle qui est silenciée depuis le plus longtemps.
    */
   const declares = useMemo(() => relances
-    .filter(r => r.ordonnance_deja_envoyee && !estSortie(r))
+    // Sortie à la main : plus aucune relance ne part, il n'y a donc plus rien à vérifier.
+    .filter(r => r.ordonnance_deja_envoyee && !horsParcours(r))
     .map(r => ({ r, rail: railAtteint(r, jour) }))
     .sort((a, b) => (b.rail?.jour ?? 0) - (a.rail?.jour ?? 0)), [relances, jour]);
 
@@ -383,22 +417,24 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   const trouvees = useMemo(() => rechercherPatientes(relances, recherche), [relances, recherche]);
 
   /**
-   * ⚠️⚠️ LE VERDICT NE COMPTE QUE LES ÉTAPES EN SERVICE. Les étapes J+14 et au-delà n'ont
-   * ni agent ni cron : *tous* leurs dossiers sont « sans aucun contact » par construction.
+   * ⚠️⚠️ LE VERDICT NE COMPTE QUE LES ÉTAPES EN SERVICE CE JOUR-LÀ. Les étapes J+21 et
+   * au-delà n'ont ni agent ni cron : *tous* leurs dossiers sont « sans aucun contact » par
+   * construction. Idem pour le J+14 avant le 26/09.
    */
-  const enService = parEtape.filter(e => e.rail.actif);
-  const aVenir = parEtape.filter(e => !e.rail.actif && e.surEtape > 0);
+  const enService = parEtape.filter(e => e.enService);
+  const aVenir = parEtape.filter(e => e.horsService > 0);
   const totalDu = enService.reduce((n, e) => n + e.surEtape, 0);
   const totalJointes = enService.reduce((n, e) => n + e.jointes, 0);
   const totalManques = enService.reduce((n, e) => n + e.manques, 0);
   const totalJamaisTente = enService.reduce((n, e) => n + e.jamaisTente, 0);
   /**
-   * ⚠️⚠️ TROIS RAISONS PARFAITEMENT NORMALES DE N'AVOIR JOINT PERSONNE, et aucune n'est un
-   * manquement : le week-end, une pause décidée, et une journée qui n'a pas encore atteint
-   * 12h30. Elles ÉTEIGNENT L'ALARME — mais pas les déclarations, qui ne dépendent pas de
-   * la journée et restent à vérifier même un dimanche.
+   * ⚠️⚠️ DEUX RAISONS PARFAITEMENT NORMALES DE N'AVOIR JOINT PERSONNE, et aucune n'est un
+   * manquement : une pause décidée, et une journée qui n'a pas encore atteint la fin de ses
+   * appels. Elles ÉTEIGNENT L'ALARME — mais pas les déclarations, qui ne dépendent pas de
+   * la journée. (Le week-end en était une troisième jusqu'au 2026-09-25 : on y appelle
+   * désormais comme en semaine.)
    */
-  const contexteExplique = estWeekEnd || enPause === true || journeeEnCours;
+  const contexteExplique = enPause === true || journeeEnCours;
 
   /**
    * LA FILE « À FAIRE », en trois groupes.
@@ -413,16 +449,20 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    */
   const pendants = enService
     .flatMap(e => e.bilans
-      .filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'a-traiter')
+      .filter(b => rangeeDeLaLigne(b, estTraitee(b)) === 'a-traiter')
       .map(b => ({ b, rail: e.rail })))
     // ⚠️ `sort` est stable : à rang égal, l'ordre des étapes est conservé.
     .sort((x, y) => rangAction(x.b) - rangAction(y.b));
+  /** Le lundi, un groupe par journée — samedi d'abord, la plus ancienne à contrôler. */
+  const pendantsParJour = joursControles
+    .map(j => ({ j, lignes: pendants.filter(x => x.b.jour === j) }))
+    .filter(g => g.lignes.length > 0);
   const parId = useMemo(() => new Map(relances.map(r => [r.id, r])), [relances]);
-  const faites = useMemo(() => [...traitements.values()]
+  const faites = useMemo(() => [...traitementsParJour.values()].flatMap(m => [...m.values()])
     .map(t => ({ t, r: parId.get(t.relance_id) }))
     // Un dossier purgé (RGPD) entre-temps n'a plus rien à afficher.
     .filter((x): x is { t: Traitement; r: Relance } => Boolean(x.r))
-    .sort((a, b) => b.t.id - a.t.id), [traitements, parId]);
+    .sort((a, b) => b.t.id - a.t.id), [traitementsParJour, parId]);
   const restant = pendants.length + declares.length;
   const totalFile = restant + faites.length;
   const pct = totalFile ? Math.round(faites.length / totalFile * 100) : 0;
@@ -432,7 +472,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    * ⚠️ File + reste = toute la journée, sans doublon : `rangeeDeLaLigne` en décide seule.
    */
   const reste = enService.flatMap(e => e.bilans
-    .filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'reste')
+    .filter(b => rangeeDeLaLigne(b, estTraitee(b)) === 'reste')
     .map(b => ({ b, rail: e.rail })));
   const resteJointes = reste.filter(x => x.b.jointe).length;
 
@@ -445,22 +485,27 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    */
   const consigner = useCallback(async (
     r: Relance, rail: Rail | null, actionCode: string | null,
-    commentaire: string, verif?: 'recue' | 'pas_recue',
+    commentaire: string, verif: 'recue' | 'pas_recue' | undefined, jourLigne: string,
   ): Promise<string | null> => {
+    // ⚠️ La journée du GESTE est celle de la LIGNE : le lundi, une ligne de samedi est
+    // consignée sur samedi. Une déclaration, elle, n'a pas de journée : elle prend celle
+    // qu'on regarde.
     const res = await traiterLigne(token, {
-      relance_id: r.id, jour, etape: rail ? rail.code : null, action_code: actionCode,
+      relance_id: r.id, jour: jourLigne, etape: rail ? rail.code : null, action_code: actionCode,
       commentaire, verif_orthop: verif,
     });
     if (!res.ok) return res.erreur;
-    setLus(prev => prev && prev.jour === jour
-      ? { ...prev, map: new Map(prev.map).set(r.id, res.data.traitement) }
-      : { jour, etat: 'ok', map: new Map([[r.id, res.data.traitement]]) });
+    setLus(prev => {
+      const parJour = new Map(prev && prev.cle === cleJours ? prev.parJour : []);
+      parJour.set(jourLigne, new Map(parJour.get(jourLigne) ?? []).set(r.id, res.data.traitement));
+      return { cle: cleJours, etat: prev && prev.cle === cleJours ? prev.etat : 'ok', parJour };
+    });
     if (res.data.declaration_levee) {
       onRelanceMaj(r.id, { ordonnance_deja_envoyee: false, notes: res.data.notes });
     }
     setFormOuvert(null);
     return null;
-  }, [token, jour, onRelanceMaj]);
+  }, [token, cleJours, onRelanceMaj]);
 
   /** Le bouton d'une ligne de la file. Grisé tant qu'un autre formulaire est ouvert. */
   const boutonGeste = (r: Relance, mode: 'traiter' | 'verifier') => {
@@ -485,10 +530,10 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
       </button>
     );
   };
-  const formGeste = (r: Relance, rail: Rail | null, actionCode: string | null, mode: 'traiter' | 'verifier') =>
+  const formGeste = (r: Relance, rail: Rail | null, actionCode: string | null, mode: 'traiter' | 'verifier', jourLigne: string) =>
     formOuvert === r.id && (
       <FormGeste mode={mode} onAnnuler={() => setFormOuvert(null)}
-        onValider={(c, v) => consigner(r, rail, actionCode, c, v)} />
+        onValider={(c, v) => consigner(r, rail, actionCode, c, v, jourLigne)} />
     );
 
   const boutonJour = (val: string, texte: string) => (
@@ -560,13 +605,17 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   /** Une ligne de la journée : à traiter (avec son bouton) ou du reste (sans). */
   const ligneJournee = ({ b, rail }: { b: Bilan; rail: Rail }, avecGeste: boolean) => (
     <div key={b.r.id} className="ctl-ligne">
-      <div className="c-etape"><BadgeRail rail={rail} /></div>
+      <div className="c-etape">
+        <BadgeRail rail={rail} />
+        {/* Le lundi, trois journées se côtoient : chaque ligne dit la sienne. */}
+        {multiJours && <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)', marginTop: 3, whiteSpace: 'nowrap' }}>{formatJourCourt(b.jour)}</span>}
+      </div>
       {cellulePatiente(b.r)}
       <div className="c-etat"><PastilleEtat b={b} /></div>
       {celluleCanaux(b)}
       {celluleConsigne(b)}
       <div className="ctl-act">{avecGeste && boutonGeste(b.r, 'traiter')}</div>
-      {avecGeste && formGeste(b.r, rail, b.action.code, 'traiter')}
+      {avecGeste && formGeste(b.r, rail, b.action.code, 'traiter', b.jour)}
     </div>
   );
 
@@ -603,7 +652,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
             : 'ORTHOP la réclame toujours — contrôlez dans ORTHOP'}
         </div>
         <div className="ctl-act">{boutonGeste(r, 'verifier')}</div>
-        {formGeste(r, rail, 'verifier', 'verifier')}
+        {formGeste(r, rail, 'verifier', 'verifier', jour)}
       </div>
     );
   };
@@ -623,6 +672,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
             <UserCheck size={13} /> {verbe} par {t.traite_par}
             <span style={{ fontWeight: 500, color: '#166534' }}>
               · {formatDateTime(t.traite_le)}
+              {multiJours && <> · journée du {formatJourCourt(t.jour)}</>}
               {t.verif_orthop && <> · ORTHOP : {t.verif_orthop === 'recue' ? 'ordonnance reçue' : 'pas encore reçue'}</>}
             </span>
           </span>
@@ -637,24 +687,24 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   };
 
   /* ── Le titre de la file : ce qu'il reste, ou pourquoi il n'y a rien ─────────────── */
-  const jourCourt = formatDateLongue(jour);
+  const jourCourt = formatDateLongue(jour) + (multiJours ? ' — avec samedi et dimanche' : '');
   const fini = restant === 0 && !contexteExplique && (totalDu > 0 || faites.length > 0);
   const tonFile: 'attente' | 'ok' | 'neutre' = restant > 0 ? 'attente' : fini ? 'ok' : 'neutre';
   const titreFile = restant > 0
     ? (pendants.length > 0
         ? `${restant} ${pluriel(restant, 'ligne', 'lignes')} à traiter`
         : `${restant} ${pluriel(restant, 'déclaration', 'déclarations')} à vérifier`)
-    : fini ? 'Journée contrôlée'
+    : fini ? (multiJours ? 'Week-end et lundi contrôlés' : 'Journée contrôlée')
     : totalDu === 0 ? 'Rien à traiter'
-    : estWeekEnd ? 'Rien à traiter — c’est le week-end'
     : enPause === true ? 'Rien à traiter — le module est en pause'
     : 'Rien à traiter pour l’instant';
   const sousFile = fini && faites.length > 0
     ? `Les ${faites.length} ${pluriel(faites.length, 'ligne qui le demandait a été traitée', 'lignes qui le demandaient ont été traitées')}`
     : fini ? `Les ${totalDu} patientes attendues ont toutes été jointes`
-    : totalDu === 0 ? 'Aucune étape ne tombait ce jour-là : il est normal qu’une journée soit vide'
+    : totalDu === 0 ? (multiJours
+        ? 'Aucune étape ne tombait ces jours-là : il est normal que le week-end soit vide'
+        : 'Aucune étape ne tombait ce jour-là : il est normal qu’une journée soit vide')
     : journeeEnCours ? 'Les lignes de la journée arriveront ici après 14h30'
-    : estWeekEnd ? 'Les patientes attendues sont reportées à lundi'
     : null;
 
   return (
@@ -725,6 +775,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
                         </span>
                         {estSortie(r0)
                           ? <Chip texte="Ordonnance reçue" ton="ok" />
+                          : p.lignes.some(sortieManuelle) ? <Chip texte="Sortie du parcours" ton="neutre" />
                           : couverteAujourdhui(r0) ? <Chip texte="Couverte" ton="ok2" />
                           : r0.ordonnance_deja_envoyee ? <Chip texte="Dit avoir envoyé" ton="attente" /> : null}
                         <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 700, color: 'var(--blue)' }}>
@@ -755,15 +806,18 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
         </Bandeau>
       )}
 
-      {/* ⚠️ TROIS raisons parfaitement NORMALES de ne voir personne de joint. Les taire
-          ferait passer une décision, un week-end, ou une heure trop matinale, pour une panne. */}
-      {estWeekEnd && (
+      {/* ⚠️ Le lundi, trois journées dans la même file : le dire, sinon le volume surprend et
+          une ligne de samedi passerait pour une ligne du jour. */}
+      {multiJours && (
         <Bandeau icone={<CalendarDays size={16} />} fond="#f8fafc" bord="var(--border)" couleur="var(--muted)">
-          <strong>C’est le week-end — aucun appel n’est prévu.</strong> Le recouvrement ne sollicite
-          personne le samedi ni le dimanche : ni appel, ni SMS, ni mail. Les patientes attendues seront
-          traitées <strong>lundi</strong>, avec la cohorte du lundi. Rien à signaler ici.
+          <strong>Lundi : le contrôle reprend aussi le week-end.</strong> Les appels et les écrits partent
+          le samedi et le dimanche, mais personne ne les contrôle ces jours-là : les lignes
+          du {formatJourCourt(joursControles[0])} et du {formatJourCourt(joursControles[1])} sont ici, avec
+          celles de lundi. Chaque ligne indique sa journée, et chaque geste y reste rattaché.
         </Bandeau>
       )}
+      {/* ⚠️ DEUX raisons parfaitement NORMALES de ne voir personne de joint. Les taire
+          ferait passer une décision, ou une heure trop matinale, pour une panne. */}
       {enPause === true && (
         <Bandeau icone={<PauseCircle size={16} />} fond="#eef2ff" bord="#c7d2fe" couleur="#3730a3">
           <strong>Le recouvrement est en pause.</strong> Aucun appel, SMS ou mail automatique ne
@@ -775,7 +829,10 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
         <Bandeau icone={<Clock size={16} />} fond="#f8fafc" bord="var(--border)" couleur="var(--muted)">
           <strong>La journée n’est pas finie.</strong> Les appels passent de 12h30 à 13h55 et les
           écrits de rattrapage à 14h30 : les lignes de la journée n’entrent dans « À faire »
-          qu’après. <strong>Pour un vrai contrôle, revenez après 14h30, ou regardez « Hier ».</strong>
+          qu’après.{' '}
+          {multiJours
+            ? <strong>Celles de samedi et de dimanche, elles, sont déjà à contrôler.</strong>
+            : <strong>Pour un vrai contrôle, revenez après 14h30, ou regardez « Hier ».</strong>}
         </Bandeau>
       )}
 
@@ -833,11 +890,13 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
             <span>Étape</span><span>Patiente</span><span>État</span><span>Ce qui a été fait</span><span>Action à réaliser</span><span />
           </div>
         )}
-        {pendants.length > 0 && <>
-          <EnteteGroupe titre={'Sur la journée du ' + formatDate(jour).slice(0, 5)} n={pendants.length}
-            aide="personne ne leur a parlé et aucun écrit ne leur est parvenu" />
-          {pendants.map(x => ligneJournee(x, true))}
-        </>}
+        {pendantsParJour.map(g => (
+          <Fragment key={g.j}>
+            <EnteteGroupe titre={'Sur la journée du ' + (multiJours ? formatJourCourt(g.j) : formatDate(g.j).slice(0, 5))} n={g.lignes.length}
+              aide="personne ne leur a parlé et aucun écrit ne leur est parvenu" />
+            {g.lignes.map(x => ligneJournee(x, true))}
+          </Fragment>
+        ))}
         {declares.length > 0 && <>
           <EnteteGroupe titre="Disent avoir envoyé leur ordonnance" n={declares.length}
             aide="toutes dates confondues : la ligne reste là tant que personne n’a vérifié" />
@@ -854,9 +913,9 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
                         overflow: 'hidden', marginBottom: 'var(--sp-3)' }}>
         <Deplier
           ouvert={resteOuvert} onClick={() => setResteOuvert(o => !o)}
-          titre="Le reste de la journée"
+          titre={multiJours ? 'Le reste des trois journées' : 'Le reste de la journée'}
           detail={reste.length === 0
-            ? 'aucune autre patiente ce jour-là'
+            ? (multiJours ? 'aucune autre patiente ces jours-là' : 'aucune autre patiente ce jour-là')
             : reste.length === resteJointes
               ? `${reste.length} ${pluriel(reste.length, 'patiente jointe', 'patientes jointes')} — rien à faire pour elles`
               : `${reste.length} ${pluriel(reste.length, 'patiente', 'patientes')} · ${resteJointes} ${pluriel(resteJointes, 'jointe', 'jointes')} · ${reste.length - resteJointes} en attente`}
@@ -901,13 +960,14 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
             </DataTable>
             <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0, padding: '10px var(--sp-4) 12px', lineHeight: 1.6,
                         borderTop: '1px solid var(--border)' }}>
+              {multiJours && <>Samedi, dimanche et lundi additionnés. </>}
               « Reste à traiter » ne compte pas les déclarations : elles ne dépendent pas de la journée.
               {aVenir.length > 0 && (
                 /* ⚠️ Montrées SÉPARÉMENT et hors du compte : sans agent ni cron, 100 % de leurs
                    dossiers sont « sans contact » — ce n'est pas un manquement, c'est une étape
                    qui n'existe pas encore. */
                 <> Pas encore automatisées ce jour-là, donc hors du contrôle :{' '}
-                  {aVenir.map(e => `${e.rail.libelle} (${e.surEtape} dossiers)`).join(', ')}. Aucun agent ni
+                  {aVenir.map(e => `${e.rail.libelle} (${e.horsService} dossiers)`).join(', ')}. Aucun agent ni
                   envoi automatique n’y est branché — il est normal que personne n’y ait été contacté.</>
               )}
             </p>
@@ -926,7 +986,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
           `transform` qui devient le bloc conteneur de tout `position: fixed`. */}
       {transcrit && <TranscriptPanel relance={transcrit} onClose={() => setTranscrit(null)} />}
       {parcours && (
-        <ParcoursPatiente token={token} ids={parcours.ids} nom={parcours.nom} onClose={fermerParcours} />
+        <ParcoursPatiente token={token} ids={parcours.ids} nom={parcours.nom} onClose={fermerParcours} onRelanceMaj={onRelanceMaj} />
       )}
     </div>
   );

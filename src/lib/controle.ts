@@ -160,7 +160,7 @@ export function canalMail(r: Relance, rail: Rail, entree: string | null): EtatCa
 export type GraviteAction = 'ok' | 'attente' | 'alerte' | 'neutre';
 export interface ActionDossier {
   /** Identifiant stable, pour compter et pour éprouver — jamais affiché. */
-  code: 'verifier' | 'jointe' | 'week-end' | 'pause' | 'en-cours'
+  code: 'verifier' | 'jointe' | 'pause' | 'en-cours'
       | 'quota' | 'rien-tente' | 'reprise' | 'reprise-passee' | 'fin-parcours';
   texte: string;
   gravite: GraviteAction;
@@ -190,8 +190,12 @@ export function prochaineEtapeAutomatique(rail: Rail): Rail | null {
   return null;
 }
 
+/**
+ * ⚠️ Plus de cas « week-end » depuis le 2026-09-25 : les appels et les écrits reprennent le
+ * samedi et le dimanche, et plus rien n'est reporté au lundi. Un samedi est une journée comme
+ * une autre — seul son CONTRÔLE est reporté au lundi, par l'écran.
+ */
 export interface ContexteJournee {
-  estWeekEnd: boolean;
   enPause: boolean | null | undefined;
   journeeEnCours: boolean;
 }
@@ -228,9 +232,6 @@ export function actionDuDossier(
   }
   if (jointe) return { code: 'jointe', texte: 'Rien à faire — elle a été jointe', gravite: 'ok' };
 
-  if (ctx.estWeekEnd) {
-    return { code: 'week-end', texte: 'Reportée à lundi — aucun envoi le week-end', gravite: 'neutre' };
-  }
   if (ctx.enPause === true) {
     return { code: 'pause', texte: 'Module en pause — reprise à la levée', gravite: 'neutre' };
   }
@@ -297,7 +298,6 @@ const RANG_ACTION: Record<ActionDossier['code'], number> = {
   reprise: 5,         // le parcours s'en charge
   'en-cours': 6,      // la journée n'est pas finie
   pause: 7,
-  'week-end': 8,
   jointe: 9,          // rien à faire
 };
 
@@ -336,8 +336,8 @@ export function parOrdreDAction(bilans: Bilan[], traitees?: ReadonlyMap<number, 
  * commentaire, et ensuite ça doit passer au vert »*.
  *
  * ⚠️⚠️ LES LIGNES GRISES (« En attente ») N'ONT PAS DE BOUTON, et c'est délibéré. Elles
- * ne sont grises QUE lorsque le contexte explique tout : week-end, module en pause, ou
- * journée pas encore finie. Les « traiter » à 10h du matin les passerait au vert AVANT
+ * ne sont grises QUE lorsque le contexte explique tout : module en pause, ou journée pas
+ * encore finie. Les « traiter » à 10h du matin les passerait au vert AVANT
  * que les appels de 12h30 aient eu lieu — et si ces appels échouaient, la ligne resterait
  * verte sur un manquement réel. Un vert posé trop tôt est pire qu'un gris.
  *
@@ -393,6 +393,11 @@ export function dernierTraitementParDossier<T extends { id: number; relance_id: 
 /** Un dossier vu à travers son étape : tout ce qu'une ligne du tableau affiche. */
 export interface Bilan {
   r: Relance;
+  /**
+   * La JOURNÉE CONTRÔLÉE de cette ligne (AAAA-MM-JJ). Le lundi, l'écran empile samedi,
+   * dimanche et lundi : c'est ce champ qui dit à quelle journée un geste se rattache.
+   */
+  jour: string;
   jointe: boolean;
   rienTente: boolean;
   appel: EtatCanal;
@@ -412,5 +417,5 @@ export function bilanDossier(r: Relance, rail: Rail, jour: string, ctx: Contexte
   // jointe ? » finiraient par diverger, et c'est le défaut que ce projet paie le plus cher.
   const jointe = estJointe(r, rail, jour);
   const rienTente = !appel.tente && !sms.tente && !mail.tente;
-  return { r, jointe, rienTente, appel, sms, mail, action: actionDuDossier(r, rail, jointe, rienTente, ctx) };
+  return { r, jour, jointe, rienTente, appel, sms, mail, action: actionDuDossier(r, rail, jointe, rienTente, ctx) };
 }

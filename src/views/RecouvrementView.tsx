@@ -8,7 +8,7 @@ import {
   ecartEcheance, RAILS_RELANCES, aRattraper, echeancesARattraper, type PorteeRail,
   // La couverture ORTHOP : une seule définition, ici, partagée par l'écran et par le miroir
   // des crons. Voir `raisonDeNePasSolliciter` pour ce qui bloque et ce qui ne fait qu'alerter.
-  couverteAujourdhui, raisonDeNePasSolliciter, type Rail,
+  couverteAujourdhui, raisonDeNePasSolliciter, sortieManuelle, type Rail,
   jointVoixDansLeRail, jointParEcritDansLeRail,
 } from '../lib/rails';
 import { lireReglages, basculerReglage, type Reglage } from '../lib/reglages';
@@ -259,7 +259,7 @@ const VUES: { id: VueFiltre; label: string; match: (r: Relance) => boolean; aler
   // ⚠️ Pas de pastille rouge : ce n'est PAS une anomalie à traiter, c'est un groupe qu'on
   // laisse tranquille. Elle existe pour qu'on puisse vérifier ce qui a été écarté, et pour
   // que l'écart entre « Tout » et les autres comptes reste explicable.
-  { id: 'couverte',      label: 'Déjà servies',  match: r => !!raisonDeNePasSolliciter(r),  title: "Ordonnance déjà renouvelée ou encore en cours — plus rien à demander, les boutons sont fermés" },
+  { id: 'couverte',      label: 'Déjà servies',  match: r => !!raisonDeNePasSolliciter(r),  title: "Ordonnance déjà renouvelée ou encore en cours, ou patiente sortie du parcours à la main — plus rien à demander, les boutons sont fermés" },
   { id: 'tout',          label: 'Tout',          match: () => true,                        title: 'Toutes les relances' },
 ];
 
@@ -382,13 +382,17 @@ async function sendRelance(
  *
  * ⚠️ Le rail se DÉDUIT de l'écart de dates, il n'est stocké nulle part : `railDeRelance()`
  * est la seule source, et elle porte déjà le décalage `date_echeance + (N − 1)`.
- * ⚠️ Les étapes sans agent dédié (J+14 et au-delà) retombent sur l'agent J+1 : c'est le seul
+ * ⚠️ Le J+14 (R5) a son agent et son jumeau depuis le 2026-09-25 : `dashboard-trigger-call-j14`.
+ * ⚠️ Les étapes sans agent dédié (J+21 et au-delà) retombent sur l'agent J+1 : c'est le seul
  * qui existe, et c'était déjà le comportement. À revoir le jour où elles seront construites.
  */
+const ENDPOINT_PAR_RAIL: Partial<Record<Rail['code'], string>> = {
+  R4: 'dashboard-trigger-call-j7',
+  R5: 'dashboard-trigger-call-j14',
+};
 function endpointAppel(relance: Relance): string {
-  return railDeRelance(relance)?.code === 'R4'
-    ? 'dashboard-trigger-call-j7'
-    : 'dashboard-trigger-call';
+  const code = railDeRelance(relance)?.code;
+  return (code && ENDPOINT_PAR_RAIL[code]) || 'dashboard-trigger-call';
 }
 
 /**
@@ -1232,7 +1236,7 @@ function CampagnesView({ batches, relances, token, onRelanceUpdate, onRelanceDel
                             </span>
                             {raisonDeNePasSolliciter(r) && (
                               <span title={raisonDeNePasSolliciter(r) || ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', whiteSpace: 'nowrap' }}>
-                                🛡 {couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
+                                🛡 {sortieManuelle(r) ? 'Sortie du parcours' : couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
                               </span>
                             )}
                             {r.sms_echec && (
@@ -1736,7 +1740,7 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
                               </span>
                               {raisonDeNePasSolliciter(r) && (
                                 <span title={raisonDeNePasSolliciter(r) || ''} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 10, fontSize: 10, fontWeight: 700, background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', whiteSpace: 'nowrap' }}>
-                                  🛡 {couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
+                                  🛡 {sortieManuelle(r) ? 'Sortie du parcours' : couverteAujourdhui(r) ? 'Couverte jusqu au ' + formatDate(r.fin_application ?? null) : 'Ordonnance reçue'}
                                 </span>
                               )}
                               {/* Le badge SMS et le badge « fixe » vivent désormais dans la colonne SMS. */}

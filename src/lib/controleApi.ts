@@ -4,6 +4,7 @@
  *   traiter      consigner un geste de l'équipe de contrôle : qui, quand, commentaire
  *   traitements  les gestes déjà posés sur une journée contrôlée
  *   historique   tout ce qui a été fait à une patiente, quelle que soit sa date d'entrée
+ *   sortir       arrêter toute relance vers une patiente (réversible par `reintegrer`)
  *
  * ⚠️⚠️ AUCUN CONTACT SORTANT : rien ici n'appelle une patiente, ni ne lui envoie un SMS ou
  * un mail. C'est la condition posée par le client pour l'écran de contrôle (2026-09-17).
@@ -94,6 +95,10 @@ export interface LigneParcours {
   orthop_prescription: string | null;
   orthop_dossier: string | null;
   orthop_benef: string | null;
+  /** Sortie MANUELLE du parcours — horodatage texte UTC naïf, `null` si elle y est. */
+  sorti_le?: string | null;
+  sorti_par?: string | null;
+  sorti_motif?: string | null;
   call_history: EntreeAppel[];
 }
 
@@ -151,6 +156,32 @@ export function traiterLigne(token: string, d: DemandeTraitement) {
 export async function traitementsDuJour(token: string, jour: string): Promise<Reponse<Traitement[]>> {
   const r = await appeler<{ traitements: Traitement[] }>(token, { action: 'traitements', jour });
   return r.ok ? { ok: true, data: r.data.traitements || [] } : r;
+}
+
+/** Ce que le serveur a écrit sur chaque dossier sorti ou remis. */
+export interface LigneSortie {
+  id: number;
+  sorti_le: string | null;
+  sorti_par: string | null;
+  sorti_motif: string | null;
+  notes: string | null;
+}
+
+/**
+ * SORTIR UNE PATIENTE DU PARCOURS (2026-09-25) — plus aucun appel, SMS ni mail de relance,
+ * automatique ou manuel. Ce n'est PAS un contact sortant : c'est l'inverse, on en arrête.
+ * ⚠️ Toutes ses lignes à la fois, et le motif est obligatoire (le serveur le refuse vide).
+ * ⚠️ « Sorti par » vient du jeton, comme « traité par ».
+ */
+export async function sortirDuParcours(token: string, ids: number[], motif: string): Promise<Reponse<LigneSortie[]>> {
+  const r = await appeler<{ lignes: LigneSortie[] }>(token, { action: 'sortir', ids, motif });
+  return r.ok ? { ok: true, data: r.data.lignes || [] } : r;
+}
+
+/** L'inverse : la patiente redevient appelable par les étapes qu'elle atteint. */
+export async function remettreDansLeParcours(token: string, ids: number[], motif = ''): Promise<Reponse<LigneSortie[]>> {
+  const r = await appeler<{ lignes: LigneSortie[] }>(token, { action: 'reintegrer', ids, motif });
+  return r.ok ? { ok: true, data: r.data.lignes || [] } : r;
 }
 
 export async function historiquePatiente(token: string, ids: number[]): Promise<Reponse<HistoriquePatiente>> {

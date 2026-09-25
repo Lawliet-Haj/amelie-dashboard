@@ -90,22 +90,29 @@ export function decalerJours(iso: string, jours: number): string {
 /**
  * Le jour de la semaine d'une date ISO, a la facon ISO-8601 : lundi = 1 ... dimanche = 7.
  *
- * Sert a la regle « le week-end est reporte au lundi » du recouvrement : plus aucun appel
- * samedi ni dimanche, et le lundi chaque etape couvre TROIS jours d'echeance.
+ * Sert au CONTROLE du lundi, qui reprend le samedi et le dimanche (2026-09-25) : les
+ * appels et les ecrits partent le week-end, mais personne ne les controle ces jours-la.
+ * (Du 18 au 25/09, il servait aussi a reporter les APPELS du week-end au lundi — regle
+ * retiree, cote ecran comme cote n8n.)
  *
  * ⚠️ Passe par MIDI UTC, comme `decalerJours` et `ecartJours` juste au-dessus. A minuit,
- * une heure de decalage suffit a changer le jour de la semaine — et une regle qui se
- * trompe de jour ferait appeler un dimanche.
+ * une heure de decalage suffit a changer le jour de la semaine.
  *
- * ⚠️ Doit rester d'accord avec `EXTRACT(ISODOW FROM CURRENT_DATE) = 1` cote n8n
- * (`PG Cibles Appels`, `PG Bilan Jour`, `PG Cibles J7`, `PG Bilan J7`). ISODOW numerote
- * comme ici ; `DOW`, lui, met dimanche a 0 — ne pas melanger les deux.
+ * ⚠️ ISODOW numerote comme ici (lundi = 1) ; `DOW`, lui, met dimanche a 0 — ne pas
+ * melanger les deux si la regle revient un jour cote SQL.
  */
 export function jourSemaineIso(iso: string): number {
   const d = new Date(String(iso).slice(0, 10) + 'T12:00:00Z');
   if (Number.isNaN(d.getTime())) return NaN;
   const n = d.getUTCDay();                 // 0 = dimanche ... 6 = samedi
   return n === 0 ? 7 : n;
+}
+
+/** Une journée en court, avec son jour de semaine : « sam. 26/09 ». Midi UTC, comme au-dessus. */
+export function formatJourCourt(iso: string): string {
+  const d = new Date(String(iso).slice(0, 10) + 'T12:00:00Z');
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: TZ });
 }
 
 /**

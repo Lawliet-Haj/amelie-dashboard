@@ -56,7 +56,9 @@ const etiquette: React.CSSProperties = {
 
 export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string; onFermer: () => void }) {
   const ecart = ecartEcheance(rail);
-  const testableParAppel = rail.actions.some(a => a.canal === 'appel' && a.etat === 'actif');
+  // `essai` : l'agent existe mais aucun automate ne tourne — l'appel de test est justement
+  // ce qui sert à le valider avant d'en brancher un.
+  const testableParAppel = rail.actions.some(a => a.canal === 'appel' && (a.etat === 'actif' || a.etat === 'essai'));
 
   const [sel, setSel] = useState<Selection | null>(null);
   const [erreurSel, setErreurSel] = useState('');
@@ -89,7 +91,13 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
    * On le déduit de la définition du rail (`actions`), sans recopier de table de canaux :
    * le serveur a la sienne, et une seconde copie ici divergerait tôt ou tard.
    */
-  const mailEnProd = rail.actions.some(a => a.canal === 'mail' && a.etat === 'actif');
+  // `essai` compte ici comme `actif` : c'est justement pour éprouver un écrit en essai
+  // (J+14 : même SMS qu'au J+7, mail 365) qu'on l'envoie vers son propre numéro.
+  const enService = (etat: string) => etat === 'actif' || etat === 'essai';
+  const mailEnProd = rail.actions.some(a => a.canal === 'mail' && enService(a.etat));
+  // Une étape sans aucun écrit en service n'a rien à envoyer — le serveur refuserait
+  // `envoi_test`. On masque donc la ligne des écrits plutôt que d'offrir un bouton qui échoue.
+  const ecritsEnProd = rail.actions.some(a => (a.canal === 'sms' || a.canal === 'mail') && enService(a.etat));
   const [email, setEmail] = useState('');
   const [avecEcrits, setAvecEcrits] = useState(false);
   const [envoi, setEnvoi] = useState<EnvoiTest | null>(null);
@@ -346,8 +354,8 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                   Un appel réel est passé avec l’agent de cette étape, vers le numéro que vous
                   indiquez. <strong>L’appel seul n’écrit rien et n’envoie rien</strong> : aucune
                   ligne de relance ne portant cet appel, le post-call s’arrête de lui-même — ni
-                  SMS, ni mail, ni statut, ni journal. Les écrits, eux, se demandent
-                  explicitement ci-dessous.
+                  SMS, ni mail, ni statut, ni journal.
+                  {ecritsEnProd && ' Les écrits, eux, se demandent explicitement ci-dessous.'}
                 </p>
 
                 {/* ── Ce que l'agent doit croire du dossier ─────────────────── */}
@@ -424,6 +432,7 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                 </div>
 
                 {/* ── Les écrits : le SMS et le mail que la production envoie après ── */}
+                {ecritsEnProd && <>
                 <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap',
                               alignItems: 'center', marginTop: 'var(--sp-3)' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)',
@@ -448,6 +457,13 @@ export function TestRail({ rail, token, onFermer }: { rail: Rail; token: string;
                   livraison, et le tag du mail est inconnu du suivi.
                   {!mailEnProd && ' Cette étape n’envoie pas de mail en production : seul le SMS partira.'}
                 </p>
+                </>}
+                {!ecritsEnProd && (
+                  <p style={{ fontSize: 'var(--fs-xs)', color: 'var(--muted)',
+                              marginTop: 'var(--sp-3)', lineHeight: 1.5 }}>
+                    Cette étape n’a encore aucun écrit en service : seul l’appel se teste ici.
+                  </p>
+                )}
 
                 {erreurEnvoi && (
                   <Bandeau ton="echec" titre="Envoi refusé">
