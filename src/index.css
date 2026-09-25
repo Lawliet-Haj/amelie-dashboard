@@ -394,3 +394,54 @@ tr:hover .phone-timeline-btn,
 @media (min-width: 900px) {
   .parcours-detail { grid-template-columns: minmax(0, 2fr) minmax(250px, 1fr); }
 }
+
+/* ── Contrôle : la file de travail, une ligne par patiente (2026-09-23) ─────────
+ * ⚠️ Une GRILLE et non un <table> : les lignes de la file ne portent pas toutes les mêmes
+ * cellules (une déclaration n'a pas de canaux, une ligne traitée n'a pas de bouton), et le
+ * formulaire de traitement s'ouvre SOUS la ligne, sur toute la largeur. Un tableau obligerait
+ * à des colSpan partout et ne sait pas se replier en carte sur un écran étroit.
+ *
+ * ⚠️ Requête de CONTENEUR, pas de fenêtre : la largeur utile dépend de la barre latérale.
+ * Une media query jugerait sur 1440 px alors que la file n'en a que 1100. */
+.ctl-file { container-type: inline-size; }
+.ctl-cols, .ctl-ligne {
+  display: grid;
+  grid-template-columns: 62px minmax(205px, 1.1fr) 122px minmax(250px, 1.6fr) minmax(200px, 1.35fr) 132px;
+  gap: 0 var(--sp-3);
+  align-items: center;
+  padding: 9px var(--sp-4);
+}
+.ctl-ligne > * { min-width: 0; }
+.ctl-ligne { border-bottom: 1px solid var(--blue-faint); }
+.ctl-ligne:last-child { border-bottom: none; }
+.ctl-ligne:hover { background: #fbfdff; }
+.ctl-cols {
+  padding-top: 7px; padding-bottom: 7px;
+  font-size: var(--fs-xs); font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .3px;
+  border-top: 1px solid var(--border);
+}
+.ctl-large { grid-column: span 2; }
+.ctl-act { justify-self: end; }
+.ctl-form { grid-column: 1 / -1; margin: 8px 0 2px 76px; }
+@container (max-width: 860px) {
+  .ctl-cols { display: none; }
+  .ctl-ligne {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "etape nom etat" "canaux canaux canaux" "consigne consigne act";
+    gap: var(--sp-2) 10px;
+  }
+  .ctl-ligne > .c-etape    { grid-area: etape; }
+  .ctl-ligne > .c-nom      { grid-area: nom; }
+  .ctl-ligne > .c-etat     { grid-area: etat; }
+  .ctl-ligne > .c-canaux   { grid-area: canaux; }
+  .ctl-ligne > .c-consigne { grid-area: consigne; }
+  .ctl-ligne > .ctl-act    { grid-area: act; }
+  .ctl-form { margin-left: 0; }
+}
+
+/* Texte lu par les lecteurs d'écran, invisible à l'écran. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}

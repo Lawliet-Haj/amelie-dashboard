@@ -2314,22 +2314,30 @@ export function RecouvrementView({ user }: { user: AuthUser }) {
         <div>
           <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0 }}>Gestion des relances · Agent sortant Amélie</p>
         </div>
+        {/* ⚠️ Sur l'onglet Contrôle, seul « Actualiser » reste (2026-09-23). L'équipe de
+            contrôle vient VÉRIFIER : Export, Ajouter, Importer et Extraire sont des outils de
+            travail sur la liste, et ils restent sur « Relances ». Même principe que l'écran
+            lui-même — rien d'autre sous la main de quelqu'un venu seulement regarder. */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <button onClick={exportCSV} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
-            <Download size={13} /> Export CSV
-          </button>
+          {activeTab !== 'controle' && (
+            <button onClick={exportCSV} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
+              <Download size={13} /> Export CSV
+            </button>
+          )}
           <button className="btn btn-ghost" onClick={load} disabled={loading} style={{ padding: '7px 12px' }}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualiser
           </button>
-          <button onClick={() => setShowManual(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
-            + Ajouter
-          </button>
-          <button onClick={() => setShowImport(true)} title="Importer un fichier Excel exporté depuis ORTHOP" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
-            <Upload size={14} /> Importer Excel
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowOrthop(true)} title="Récupérer la liste directement depuis ORTHOP, sans export Excel">
-            <CloudDownload size={14} /> Extraire depuis ORTHOP
-          </button>
+          {activeTab !== 'controle' && <>
+            <button onClick={() => setShowManual(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
+              + Ajouter
+            </button>
+            <button onClick={() => setShowImport(true)} title="Importer un fichier Excel exporté depuis ORTHOP" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: 'white', border: '1px solid var(--border)', borderRadius: 8, fontSize: 13, fontWeight: 600, color: 'var(--text)', cursor: 'pointer' }}>
+              <Upload size={14} /> Importer Excel
+            </button>
+            <button className="btn btn-primary" onClick={() => setShowOrthop(true)} title="Récupérer la liste directement depuis ORTHOP, sans export Excel">
+              <CloudDownload size={14} /> Extraire depuis ORTHOP
+            </button>
+          </>}
         </div>
       </div>
 

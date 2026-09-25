@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 /**
  * Puce d'état — la brique visuelle la plus répandue du dashboard.
  *
@@ -17,7 +18,16 @@
  */
 export type Ton = 'attente' | 'encours' | 'ok' | 'ok2' | 'fort' | 'echec' | 'neutre';
 
-export function Chip({ texte, ton = 'neutre', titre }: { texte: string; ton?: Ton; titre?: string }) {
+/**
+ * `icone` : une icône devant le texte — typiquement le CANAL (téléphone, bulle, enveloppe)
+ * quand la puce dit l'état d'un canal. L'icône est décorative pour les lecteurs d'écran.
+ *
+ * `lecteur` : ce que lit un lecteur d'écran À LA PLACE du texte visible. ⚠️ Indispensable
+ * dès qu'une icône porte du sens : « Livré » seul ne dit pas si c'est le SMS ou le mail.
+ */
+export function Chip({ texte, ton = 'neutre', titre, icone, lecteur }: {
+  texte: string; ton?: Ton; titre?: string; icone?: ReactNode; lecteur?: string;
+}) {
   return (
     <span
       title={titre}
@@ -30,7 +40,10 @@ export function Chip({ texte, ton = 'neutre', titre }: { texte: string; ton?: To
         border: `1px solid var(--st-${ton}-bd)`,
       }}
     >
-      {texte}
+      {icone && <span aria-hidden="true" style={{ display: 'inline-flex' }}>{icone}</span>}
+      {lecteur
+        ? <><span aria-hidden="true">{texte}</span><span className="sr-only">{lecteur}</span></>
+        : texte}
     </span>
   );
 }

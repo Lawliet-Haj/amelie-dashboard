@@ -1,7 +1,7 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, type ReactNode } from 'react';
 import {
-  CheckCircle, AlertTriangle, CalendarDays, PhoneOff, PauseCircle, Clock,
-  MessageSquareWarning, BookOpen, UserCheck, History, Search,
+  CheckCircle, AlertTriangle, CalendarDays, PauseCircle, Clock, BookOpen, UserCheck, History,
+  Phone, MessageSquare, Mail, ShieldCheck, ChevronRight, ChevronDown, ClipboardCheck,
 } from 'lucide-react';
 import type { Relance } from '../types';
 import { Chip, DataTable, tdStyle, tdDiscret, TranscriptPanel, BoutonTranscript, SearchInput } from '../ui';
@@ -13,8 +13,8 @@ import {
 // l'éprouver sur les vraies données sans charger React. Cette vue ne fait que DESSINER
 // ce qu'il rend — elle ne rejuge rien.
 import {
-  bilanDossier, parOrdreDAction, demandeUnGeste, dernierTraitementParDossier,
-  type Bilan, type ContexteJournee, type GraviteAction,
+  bilanDossier, parOrdreDAction, rangAction, rangeeDeLaLigne, dernierTraitementParDossier,
+  type Bilan, type ContexteJournee, type GraviteAction, type EtatCanal, type ActionDossier,
 } from '../lib/controle';
 import { traiterLigne, traitementsDuJour, type Traitement } from '../lib/controleApi';
 import { rechercherPatientes } from '../lib/parcours';
@@ -41,31 +41,24 @@ function hhmmParis(): number {
 /**
  * CONTRÔLER UNE JOURNÉE — l'écran de vérification du recouvrement.
  *
- * ⚠️⚠️ IL MONTRE TOUTE LA JOURNÉE, PAS SEULEMENT LES MANQUANTS (2026-09-21).
- * Demande du client : « sur contrôle on devrait plutôt montrer tout ceux qui ont été
- * appelés, mais il faudrait distinguer les cas qu'on n'a vraiment pas pu contacter, et
- * qu'on puisse voir quelle action réaliser et ce qui a déjà été fait. »
+ * ⚠️⚠️ UNE FILE DE TRAVAIL D'ABORD, LA JOURNÉE ENSUITE (refonte du 2026-09-23, maquette
+ * validée par le client). L'écran empilait la recherche, la journée, le verdict, le
+ * tableau par étape, deux onglets et six filtres AVANT la première ligne à traiter — et une
+ * journée type en compte 3 sur 73. L'équipe vient savoir ce qu'il lui reste à faire :
  *
- * L'écran porte **une ligne par patiente attendue**, et chaque ligne répond aux trois
- * questions du client :
+ *   1. une barre     → la journée, la recherche, le mode d'emploi
+ *   2. « À faire »   → ce qui attend un geste, avec la progression ; à zéro, « Journée
+ *                      contrôlée ». Les déclarations « Dit avoir envoyé » y sont AUSSI —
+ *                      un onglet séparé, avec son compteur gris, se laissait oublier
+ *   3. le reste      → les patientes jointes et les chiffres par étape, repliés, à un clic
  *
- *   1. où en est-elle       → la colonne « État » — rouge = action requise, vert = traitée
- *   2. ce qui a été fait    → les trois canaux, datés DANS LE RAIL
- *   3. quoi faire ensuite   → la colonne « Action à réaliser »
+ * ⚠️ La demande du 2026-09-21 tient toujours — « montrer tous ceux qui ont été appelés » :
+ * la file + le reste de la journée font TOUTE la journée. Rien n'est retiré, c'est rangé.
  *
  * ⚠️⚠️ AUCUN CONTACT SORTANT ICI — rien qui atteigne une patiente. Demande du client
  * (2026-09-17) : « ils n'auront pas besoin de lancer des appels ou d'envoyer des SMS, ils
- * vont juste contrôler ce qui s'est passé ». L'onglet « Relances » porte déjà tout
- * l'outillage d'action ; un bouton « Appeler » n'a rien à faire sous la main de quelqu'un
- * qui n'est venu que vérifier.
- *
- * ⚠️⚠️ CHAQUE LIGNE QUI N'EST PAS VERTE A SON BOUTON, ET SON TRAITEMENT EST SIGNÉ
- * (2026-09-23, au sortir d'une réunion client) : « pour ceux qui ne sont pas vert, mettre
- * un bouton d'action, qu'on puisse voir traité par + nom de celui qui a traité, et
- * rajouter la possibilité de mettre un commentaire — ensuite ça doit passer au vert ».
- * Ce revirement précise la règle du 21/09 (« le seul libellé cliquable est Vérifier »),
- * il ne la contredit pas : « Traiter » ne CONTACTE personne, il CONSIGNE ce que l'équipe
- * a fait, qui et quand. La règle qui tient toujours est celle du contact sortant.
+ * vont juste contrôler ce qui s'est passé ». « Traiter » et « Vérifier » ne CONTACTENT
+ * personne : ils CONSIGNENT ce que l'équipe a fait, qui et quand (2026-09-23).
  *
  * ⚠️ Le nom de celle qui traite vient du JETON, côté serveur — jamais du navigateur.
  */
@@ -74,14 +67,31 @@ const COULEUR_ACTION: Record<GraviteAction, string> = {
 };
 
 /**
+ * Ce que l'écran demandait au moment du geste, pour la ligne « Déjà traitées ».
+ *
+ * ⚠️ Lu dans `action_code`, ce que le SERVEUR a enregistré — et non recalculé : entre-temps
+ * la ligne a pu devenir jointe (un SMS livré dans la nuit), et la consigne d'aujourd'hui ne
+ * dirait plus ce qu'on a traité.
+ */
+const LIB_GESTE: Partial<Record<ActionDossier['code'], string>> = {
+  'rien-tente': 'Rien n’avait été tenté',
+  quota: PLAFOND_TENTATIVES + ' tentatives épuisées',
+  'fin-parcours': 'Plus aucune étape automatique',
+  'reprise-passee': 'Reprise prévue, date déjà passée',
+  reprise: 'Reprise automatique prévue',
+  verifier: 'Disait avoir déjà envoyé son ordonnance',
+};
+
+/**
  * L'étiquette d'une étape. Un badge plutôt qu'un simple titre : c'est ce qui rend les
- * blocs distinguables d'un coup d'œil quand on fait défiler plusieurs rails.
+ * lignes de plusieurs étapes distinguables d'un coup d'œil, maintenant qu'elles sont dans
+ * la même file.
  */
 function BadgeRail({ rail }: { rail: Rail | null }) {
   return (
     <span style={{
-      display: 'inline-block', padding: '3px 10px', borderRadius: 999,
-      fontFamily: 'Lexend,sans-serif', fontSize: 12, fontWeight: 800,
+      display: 'inline-block', padding: '2px 9px', borderRadius: 999, whiteSpace: 'nowrap',
+      fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 800,
       background: rail ? 'var(--blue-faint)' : 'var(--st-neutre-bg)',
       color: rail ? 'var(--blue)' : 'var(--muted)',
       border: '1px solid ' + (rail ? 'var(--blue-mid)' : 'var(--border)'),
@@ -90,53 +100,34 @@ function BadgeRail({ rail }: { rail: Rail | null }) {
 }
 
 /**
- * ROUGE = action requise · VERT = traitée. La lecture demandée par le client.
+ * ROUGE = action requise · VERT = rien à faire. La lecture demandée par le client.
  *
  * ⚠️⚠️ ELLE SE TAIT QUAND LE CONTEXTE EXPLIQUE TOUT. Un week-end, une pause, ou une
  * journée qui n'a pas encore atteint 12h30 : la patiente n'a rien reçu, et c'est
- * parfaitement normal. La peindre en rouge à 8h du matin ferait hurler l'écran TOUS LES
- * JOURS — et cet onglet est la vue par défaut du Recouvrement.
- *
- * ⚠️ Le juge est `action.gravite`, pas une seconde lecture du contexte : les trois cas
- * neutres sont exactement ceux que l'escalier de `actionDuDossier` range en `neutre`.
- *
- * ⚠️ Une ligne TRAITÉE par l'équipe passe au vert : c'est la demande du 2026-09-23. Le
- * vert dit « plus rien à faire ici », pas « elle a été jointe » — la puce « Traitée » le
- * distingue de « Jointe », et la colonne d'à côté dit toujours ce qui lui est parvenu.
+ * parfaitement normal. Le juge est `action.gravite` : les trois cas neutres sont
+ * exactement ceux que l'escalier de `actionDuDossier` range en `neutre`.
  */
-function PastilleEtat({ b, t }: { b: Bilan; t?: Traitement }) {
-  if (t) return <Chip texte="Traitée" ton="ok" titre={'Traitée par ' + t.traite_par + ' le ' + formatDateTime(t.traite_le)} />;
+function PastilleEtat({ b }: { b: Bilan }) {
   if (b.jointe) return <Chip texte="Jointe" ton="ok" titre="Quelque chose lui est parvenu à cette étape" />;
-  if (b.action.gravite === 'neutre') {
-    return <Chip texte="En attente" ton="neutre" titre={b.action.texte} />;
-  }
+  if (b.action.gravite === 'neutre') return <Chip texte="En attente" ton="neutre" titre={b.action.texte} />;
   if (b.rienTente) {
     return <Chip texte="Rien tenté" ton="echec" titre="Ni appel, ni SMS, ni mail depuis l’entrée dans cette étape" />;
   }
   return <Chip texte="Sans contact" ton="attente" titre="On a essayé, mais rien ne lui est parvenu" />;
 }
 
-/** Ce qui a été consigné : qui, quand, et le commentaire. Affiché sous l'action. */
-function BlocTraite({ t }: { t: Traitement }) {
-  return (
-    <div style={{ marginTop: 6, padding: '6px 10px', borderRadius: 8, background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
-      <p style={{ margin: 0, fontSize: 12, color: '#15803d', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <UserCheck size={13} />
-        {t.verif_orthop ? 'Vérifiée' : 'Traitée'} par {t.traite_par}
-        <span style={{ fontWeight: 500, color: '#166534' }}>· {formatDateTime(t.traite_le)}</span>
-      </p>
-      {t.verif_orthop && (
-        <p style={{ margin: '2px 0 0', fontSize: 12, color: '#166534' }}>
-          ORTHOP : {t.verif_orthop === 'recue' ? 'ordonnance reçue' : 'ordonnance pas encore reçue'}
-        </p>
-      )}
-      {t.commentaire && (
-        <p style={{ margin: '3px 0 0', fontSize: 12, color: 'var(--text)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-          « {t.commentaire} »
-        </p>
-      )}
-    </div>
-  );
+/**
+ * Un canal, en une puce : l'icône dit LEQUEL, le mot dit OÙ il en est.
+ *
+ * ⚠️ Jamais la couleur seule : l'icône nomme le canal, le mot nomme l'état, et la phrase
+ * complète reste au survol et pour les lecteurs d'écran (`lecteur`).
+ */
+const ICONE_CANAL = { appel: Phone, sms: MessageSquare, mail: Mail } as const;
+const NOM_CANAL = { appel: 'Appel', sms: 'SMS', mail: 'Mail' } as const;
+function PuceCanal({ canal, e }: { canal: keyof typeof ICONE_CANAL; e: EtatCanal }) {
+  const Icone = ICONE_CANAL[canal];
+  const phrase = NOM_CANAL[canal] + ' : ' + e.texte;
+  return <Chip texte={e.court} ton={e.ton} titre={phrase} lecteur={phrase} icone={<Icone size={11} />} />;
 }
 
 /**
@@ -168,15 +159,15 @@ function FormGeste({ mode, onValider, onAnnuler }: {
     <button
       onClick={action} disabled={envoi}
       style={{
-        padding: '5px 12px', borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif',
-        fontSize: 11.5, fontWeight: 700, border: '1px solid ' + couleur, background: fond, color: couleur,
+        padding: '0 13px', minHeight: 32, borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif',
+        fontSize: 12, fontWeight: 700, border: '1px solid ' + couleur, background: fond, color: couleur,
         cursor: envoi ? 'not-allowed' : 'pointer', opacity: envoi ? 0.55 : 1,
       }}>{texte}</button>
   );
   return (
-    <div style={{ marginTop: 7, padding: '9px 10px', borderRadius: 9, background: '#f8fafc', border: '1px solid var(--border)', maxWidth: 440 }}>
+    <div className="ctl-form" style={{ padding: '10px 12px', borderRadius: 10, background: '#f8fafc', border: '1px solid var(--border)', maxWidth: 560 }}>
       {mode === 'verifier' && (
-        <p style={{ margin: '0 0 6px', fontSize: 11.5, color: 'var(--muted)' }}>
+        <p style={{ margin: '0 0 6px', fontSize: 12, color: 'var(--muted)' }}>
           Contrôlez dans ORTHOP, puis indiquez ce que vous y avez vu.
         </p>
       )}
@@ -184,31 +175,83 @@ function FormGeste({ mode, onValider, onAnnuler }: {
         autoFocus value={commentaire} maxLength={1000} rows={2} disabled={envoi}
         onChange={e => setCommentaire(e.target.value)}
         placeholder="Commentaire (facultatif) — ce que vous avez fait ou constaté"
+        aria-label="Commentaire (facultatif)"
         style={{
-          width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '6px 8px',
-          borderRadius: 7, border: '1px solid var(--border)', fontFamily: 'inherit', fontSize: 12.5,
+          width: '100%', boxSizing: 'border-box', resize: 'vertical', padding: '7px 9px',
+          borderRadius: 8, border: '1px solid var(--border)', fontFamily: 'inherit', fontSize: 12.5,
           color: 'var(--text)', background: 'white',
         }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
         {mode === 'verifier' ? (
           <>
-            <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Dans ORTHOP :</span>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>Dans ORTHOP :</span>
             {bouton('Ordonnance reçue', '#047857', '#ecfdf5', () => valider('recue'))}
             {bouton('Pas encore reçue', '#b45309', '#fffbeb', () => valider('pas_recue'))}
           </>
         ) : bouton('Marquer comme traité', '#047857', '#ecfdf5', () => valider())}
         <button onClick={onAnnuler} disabled={envoi}
-          style={{ border: 'none', background: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 12, padding: '4px 6px' }}>
+          style={{ border: 'none', background: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 12, fontWeight: 600, padding: '4px 6px' }}>
           Annuler
         </button>
-        {envoi && <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Enregistrement…</span>}
+        {envoi && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Enregistrement…</span>}
       </div>
       {erreur && <p style={{ margin: '6px 0 0', fontSize: 12, color: '#b91c1c' }}>Non enregistré : {erreur}.</p>}
     </div>
   );
 }
 
-type FiltreJournee = 'tout' | 'a-traiter' | 'traitees' | 'jointes' | 'sans-contact' | 'rien-tente';
+/** Un bandeau de contexte : ce qui explique qu'une journée paraisse vide. */
+function Bandeau({ icone, fond, bord, couleur, children }: {
+  icone: ReactNode; fond: string; bord: string; couleur: string; children: ReactNode;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px',
+                  background: fond, border: '1px solid ' + bord, borderRadius: 'var(--r-lg)',
+                  marginBottom: 'var(--sp-3)' }}>
+      <span style={{ color: couleur, flexShrink: 0, marginTop: 1, display: 'inline-flex' }}>{icone}</span>
+      <p style={{ fontSize: 12.5, color: couleur === 'var(--muted)' ? 'var(--text)' : couleur, margin: 0, lineHeight: 1.55 }}>
+        {children}
+      </p>
+    </div>
+  );
+}
+
+/** L'en-tête d'un groupe de la file : un titre, un compte, une phrase d'aide. */
+function EnteteGroupe({ titre, n, aide }: { titre: string; n: number; aide: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', padding: '9px var(--sp-4) 7px',
+                  background: '#f8fafc', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--blue-faint)' }}>
+      <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 11, fontWeight: 800, letterSpacing: '.5px',
+                     textTransform: 'uppercase', color: 'var(--text-2)' }}>{titre}</span>
+      <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 11, fontWeight: 800, padding: '0 7px', borderRadius: 999,
+                     background: 'var(--st-neutre-bg)', border: '1px solid var(--st-neutre-bd)', color: 'var(--muted)' }}>{n}</span>
+      <span style={{ fontSize: 12, color: 'var(--muted)' }}>{aide}</span>
+    </div>
+  );
+}
+
+/** Une ligne déroulante de la carte « le reste de la journée ». */
+function Deplier({ ouvert, onClick, titre, detail, droite }: {
+  ouvert: boolean; onClick: () => void; titre: string; detail: string; droite?: ReactNode;
+}) {
+  return (
+    <button onClick={onClick} aria-expanded={ouvert} style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px var(--sp-4)',
+      border: 'none', background: 'white', cursor: 'pointer', textAlign: 'left', color: 'var(--text)', fontFamily: 'inherit',
+    }}>
+      {/* Deux icônes plutôt qu'une rotation : l'état se lit même là où un `transform` ne
+          s'applique pas (impression, captures du mode opératoire). */}
+      {ouvert
+        ? <ChevronDown size={15} style={{ color: 'var(--muted)' }} />
+        : <ChevronRight size={15} style={{ color: 'var(--muted)' }} />}
+      <span style={{ fontFamily: 'Lexend,sans-serif', fontSize: 13, fontWeight: 700 }}>{titre}</span>
+      <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>{detail}</span>
+      {droite && <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>{droite}</span>}
+    </button>
+  );
+}
+
+const pluriel = (n: number, un: string, plusieurs: string) => (n > 1 ? plusieurs : un);
 
 export function ControleJournee({ relances, enPause, motifPause, token, onRelanceMaj }: {
   relances: Relance[];
@@ -239,10 +282,10 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   const ajd = aujourdhuiIso();
   const [jour, setJour] = useState(ajd);
   const hier = decalerJours(ajd, -1);
-  const [liste, setListe] = useState<'journee' | 'declare'>('journee');
-  const [filtre, setFiltre] = useState<FiltreJournee>('tout');
   /** La ligne dont le formulaire de traitement est ouvert (une seule à la fois). */
   const [formOuvert, setFormOuvert] = useState<number | null>(null);
+  const [resteOuvert, setResteOuvert] = useState(false);
+  const [chiffresOuverts, setChiffresOuverts] = useState(false);
   /**
    * Les gestes déjà posés, le dernier par dossier — et LA JOURNÉE à laquelle ils
    * appartiennent. Tant que la lecture de la journée affichée n'est pas revenue, on est
@@ -258,11 +301,10 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   /**
    * ⚠️⚠️ UN TRAITEMENT APPARTIENT À UNE JOURNÉE CONTRÔLÉE, pas à une patiente pour toujours.
    * Une même patiente revient à l'étape suivante une semaine plus tard : ce qu'on a traité
-   * au J+1 ne dit rien du J+7. Et le lundi regroupe les cohortes du week-end — les deux
-   * journées sont contrôlées séparément. On recharge donc à chaque changement de jour.
+   * au J+1 ne dit rien du J+7. On recharge donc à chaque changement de jour.
    *
    * ⚠️ Si la lecture échoue, on le DIT : sans traitements, toutes les lignes traitées
-   * redeviendraient rouges et l'équipe les retraiterait.
+   * redeviendraient à faire et l'équipe les retraiterait.
    */
   useEffect(() => {
     let vivant = true;
@@ -281,11 +323,8 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   const choisirJour = (j: string) => { setJour(j); setFormOuvert(null); };
 
   /**
-   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18).
-   *
-   * Les crons d'appel ne tournent plus que du lundi au vendredi, et la cohorte du samedi
-   * et du dimanche est reprise le lundi. On ne masque rien : la population reste affichée,
-   * seul le VERDICT cesse d'alerter.
+   * ⚠️⚠️ LE WEEK-END N'EST PAS UN MANQUEMENT (2026-09-18). Les crons d'appel ne tournent
+   * que du lundi au vendredi. On ne masque rien : seul le verdict cesse d'alerter.
    */
   const estWeekEnd = jourSemaineIso(jour) >= 6;
   const journeeEnCours = jour === ajd && hhmmParis() < FIN_FENETRE_HHMM;
@@ -301,9 +340,7 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    */
   const parEtape = useMemo(() => RAILS_RELANCES.map(rail => {
     const ctx: ContexteJournee = { estWeekEnd, enPause, journeeEnCours };
-    // ⚠️ TRIÉ : ce qui demande une action remonte en tête, ce qui a été TRAITÉ redescend.
-    //    Le classement vit dans `controle.ts`, avec les actions.
-    //    ⚠️ Le tri ne change AUCUN compteur : l'ordre n'entre dans aucun total.
+    // ⚠️ Le tri ne change AUCUN compteur : l'ordre n'entre dans aucun total.
     const bilans = parOrdreDAction(
       lignesDuRail(relances, rail, 'jour', jour).map(r => bilanDossier(r, rail, jour, ctx)), traitements);
     return {
@@ -316,8 +353,9 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
       manques: bilans.filter(b => !b.jointe).length,
       // Le sous-ensemble alarmant : personne n'a rien tenté, sur aucun canal.
       jamaisTente: bilans.filter(b => !b.jointe && b.rienTente).length,
-      aTraiter: bilans.filter(b => demandeUnGeste(b) && !traitements.has(b.r.id)).length,
-      traitees: bilans.filter(b => traitements.has(b.r.id)).length,
+      // ⚠️ Les déclarations sont comptées À PART (elles ne dépendent pas de la journée) :
+      // ici, seulement les lignes que la file range sous « Sur la journée ».
+      aTraiter: bilans.filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'a-traiter').length,
     };
   }), [relances, jour, estWeekEnd, enPause, journeeEnCours, traitements]);
 
@@ -327,26 +365,19 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
    *
    * ⚠️⚠️ CETTE LISTE N’EST PAS BORNÉE À LA JOURNÉE, et c’est délibéré (arbitrage client
    * du 2026-09-17, reconfirmé le 21/09). Le drapeau est COLLANT : seule la vérification
-   * le lève. C’est une file d’attente, pas un événement du jour.
+   * le lève, et tant qu'il est posé la patiente n'est plus appelée. C’est une file
+   * d’attente, pas un événement du jour.
    *
    * ⚠️ On écarte celles dont l’ordonnance est ARRIVÉE (`estSortie`) : leur déclaration
    * est confirmée par ORTHOP, il n’y a plus rien à vérifier.
    *
-   * ⚠️ Groupé par `railAtteint` (la dernière étape DÉPASSÉE) : ces patientes sont
-   * réparties partout dans le parcours, pas sur l’étape du jour.
+   * ⚠️ Classées par la dernière étape DÉPASSÉE (`railAtteint`), la plus avancée d'abord :
+   * c'est la plus ancienne des déclarations, celle qui est silenciée depuis le plus longtemps.
    */
-  const declares = useMemo(() => {
-    const lg = relances.filter(r => r.ordonnance_deja_envoyee && !estSortie(r));
-    const m = new Map<string, { rail: Rail | null; lignes: Relance[] }>();
-    for (const r of lg) {
-      const rail = railAtteint(r, jour);
-      const cle = rail ? rail.code : '—';
-      const g = m.get(cle) ?? { rail, lignes: [] };
-      g.lignes.push(r);
-      m.set(cle, g);
-    }
-    return { total: lg.length, groupes: [...m.values()].sort((a, b) => (b.rail?.jour ?? 0) - (a.rail?.jour ?? 0)) };
-  }, [relances, jour]);
+  const declares = useMemo(() => relances
+    .filter(r => r.ordonnance_deja_envoyee && !estSortie(r))
+    .map(r => ({ r, rail: railAtteint(r, jour) }))
+    .sort((a, b) => (b.rail?.jour ?? 0) - (a.rail?.jour ?? 0)), [relances, jour]);
 
   /** La recherche porte sur TOUT le stock chargé, pas sur la journée : c'est la demande. */
   const trouvees = useMemo(() => rechercherPatientes(relances, recherche), [relances, recherche]);
@@ -361,49 +392,55 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
   const totalJointes = enService.reduce((n, e) => n + e.jointes, 0);
   const totalManques = enService.reduce((n, e) => n + e.manques, 0);
   const totalJamaisTente = enService.reduce((n, e) => n + e.jamaisTente, 0);
-  const totalATraiter = enService.reduce((n, e) => n + e.aTraiter, 0);
-  const totalTraitees = enService.reduce((n, e) => n + e.traitees, 0);
   /**
    * ⚠️⚠️ TROIS RAISONS PARFAITEMENT NORMALES DE N'AVOIR JOINT PERSONNE, et aucune n'est un
    * manquement : le week-end, une pause décidée, et une journée qui n'a pas encore atteint
-   * 12h30. Elles ÉTEIGNENT L'ALARME.
-   *
-   * ⚠️ Depuis le 2026-09-23, l'alarme porte sur ce qui reste À TRAITER, et non plus sur les
-   * patientes sans contact : une journée dont l'équipe a traité chaque ligne rouge est une
-   * journée contrôlée. Le nombre de patientes sans contact reste écrit, lui, en toutes
-   * lettres — c'est un fait, que le traitement ne change pas.
+   * 12h30. Elles ÉTEIGNENT L'ALARME — mais pas les déclarations, qui ne dépendent pas de
+   * la journée et restent à vérifier même un dimanche.
    */
   const contexteExplique = estWeekEnd || enPause === true || journeeEnCours;
-  const alerte = totalATraiter > 0 && !contexteExplique;
 
-  /** Les vues de la journée. Le compteur est celui du périmètre que le clic affichera. */
-  const VUES: { id: FiltreJournee; label: string; n: number; alerte: boolean }[] = [
-    { id: 'tout',         label: 'Toutes',        n: totalDu,          alerte: false },
-    { id: 'a-traiter',    label: 'À traiter',     n: totalATraiter,    alerte: !contexteExplique },
-    { id: 'traitees',     label: 'Traitées',      n: totalTraitees,    alerte: false },
-    { id: 'jointes',      label: 'Jointes',       n: totalJointes,     alerte: false },
-    { id: 'sans-contact', label: 'Sans contact',  n: totalManques,     alerte: false },
-    { id: 'rien-tente',   label: 'Rien tenté',    n: totalJamaisTente, alerte: !contexteExplique },
-  ];
+  /**
+   * LA FILE « À FAIRE », en trois groupes.
+   *
+   * ⚠️ Une ligne de la journée qui porte la déclaration (`verifier`) n'est PAS dans le
+   * premier groupe : elle est déjà dans le second, et la montrer deux fois ferait compter
+   * deux gestes pour une seule vérification.
+   *
+   * ⚠️ « Déjà traitées » se lit dans les TRAITEMENTS de la journée, pas dans les lignes du
+   * jour : une déclaration vérifiée quitte la liste des déclarations (le drapeau est levé),
+   * et c'est ici qu'on la retrouve, avec le nom de celle qui l'a vérifiée.
+   */
+  const pendants = enService
+    .flatMap(e => e.bilans
+      .filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'a-traiter')
+      .map(b => ({ b, rail: e.rail })))
+    // ⚠️ `sort` est stable : à rang égal, l'ordre des étapes est conservé.
+    .sort((x, y) => rangAction(x.b) - rangAction(y.b));
+  const parId = useMemo(() => new Map(relances.map(r => [r.id, r])), [relances]);
+  const faites = useMemo(() => [...traitements.values()]
+    .map(t => ({ t, r: parId.get(t.relance_id) }))
+    // Un dossier purgé (RGPD) entre-temps n'a plus rien à afficher.
+    .filter((x): x is { t: Traitement; r: Relance } => Boolean(x.r))
+    .sort((a, b) => b.t.id - a.t.id), [traitements, parId]);
+  const restant = pendants.length + declares.length;
+  const totalFile = restant + faites.length;
+  const pct = totalFile ? Math.round(faites.length / totalFile * 100) : 0;
 
-  const passeFiltre = (b: Bilan): boolean => {
-    if (filtre === 'a-traiter') return demandeUnGeste(b) && !traitements.has(b.r.id);
-    if (filtre === 'traitees') return traitements.has(b.r.id);
-    if (filtre === 'jointes') return b.jointe;
-    if (filtre === 'sans-contact') return !b.jointe;
-    if (filtre === 'rien-tente') return !b.jointe && b.rienTente;
-    return true;
-  };
-  const etapesAffichees = enService
-    .map(e => ({ ...e, visibles: e.bilans.filter(passeFiltre) }))
-    .filter(e => e.visibles.length > 0);
-  const totalAffiche = etapesAffichees.reduce((n, e) => n + e.visibles.length, 0);
+  /**
+   * Le reste de la journée : ce qui n'attend rien — jointes, et lignes en attente.
+   * ⚠️ File + reste = toute la journée, sans doublon : `rangeeDeLaLigne` en décide seule.
+   */
+  const reste = enService.flatMap(e => e.bilans
+    .filter(b => rangeeDeLaLigne(b, traitements.has(b.r.id)) === 'reste')
+    .map(b => ({ b, rail: e.rail })));
+  const resteJointes = reste.filter(x => x.b.jointe).length;
 
   /**
    * Consigner un geste. Renvoie un message d'erreur, ou `null` si c'est enregistré.
    *
-   * ⚠️ La ligne ne passe au vert QU'APRÈS la réponse du serveur, avec ce qu'il a écrit
-   * (son nom, son heure). Afficher « traitée » avant, c'est risquer un vert que la base ne
+   * ⚠️ La ligne ne passe en « Déjà traitées » QU'APRÈS la réponse du serveur, avec ce qu'il
+   * a écrit (son nom, son heure). L'afficher avant, c'est risquer un vert que la base ne
    * connaît pas — et que plus personne ne retraitera.
    */
   const consigner = useCallback(async (
@@ -425,48 +462,40 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
     return null;
   }, [token, jour, onRelanceMaj]);
 
-  /**
-   * Le geste d'une ligne : son bouton, son formulaire, ou ce qui a été consigné.
-   *
-   * ⚠️ Une fonction appelée, pas un composant `<Geste/>` : déclarée ici, elle serait
-   * recréée à chaque rendu et démonterait le formulaire à chaque frappe.
-   */
-  const geste = (r: Relance, rail: Rail | null, actionCode: string | null, mode: 'traiter' | 'verifier') => {
-    const t = traitements.get(r.id);
-    if (formOuvert === r.id) {
-      return (
-        <FormGeste
-          mode={mode}
-          onAnnuler={() => setFormOuvert(null)}
-          onValider={(c, v) => consigner(r, rail, actionCode, c, v)} />
-      );
-    }
-    const occupe = formOuvert !== null;
+  /** Le bouton d'une ligne de la file. Grisé tant qu'un autre formulaire est ouvert. */
+  const boutonGeste = (r: Relance, mode: 'traiter' | 'verifier') => {
+    if (formOuvert === r.id) return null;
+    const occupe = formOuvert !== null || etatTraitements === 'chargement';
+    const verif = mode === 'verifier';
     return (
       <button
         onClick={() => setFormOuvert(r.id)}
-        disabled={occupe || etatTraitements === 'chargement'}
-        title={mode === 'verifier'
+        disabled={occupe}
+        title={verif
           ? 'Contrôlez dans ORTHOP, puis indiquez si l’ordonnance y est — le signalement sera retiré'
-          : 'Consigner ce que vous avez fait : la ligne passera au vert, avec votre nom'}
+          : 'Consigner ce que vous avez fait : la ligne passera dans « Déjà traitées », avec votre nom'}
         style={{
-          marginTop: 6, padding: '4px 12px', borderRadius: 'var(--r-md)',
-          fontFamily: 'Lexend,sans-serif', fontSize: 11.5, fontWeight: 700,
-          border: '1px solid ' + (occupe ? 'var(--border)' : '#a7f3d0'),
-          background: 'white', color: occupe ? 'var(--muted)' : '#047857',
+          display: 'inline-flex', alignItems: 'center', gap: 6, padding: '0 13px', minHeight: 32,
+          borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif', fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+          border: '1px solid ' + (occupe ? 'var(--border)' : verif ? 'var(--st-attente-bd)' : '#a7f3d0'),
+          background: 'white', color: occupe ? 'var(--muted)' : verif ? 'var(--st-attente-fg)' : '#047857',
           cursor: occupe ? 'not-allowed' : 'pointer',
-          display: 'inline-flex', alignItems: 'center', gap: 5,
         }}>
-        <UserCheck size={12} /> {mode === 'verifier' ? 'Vérifier' : (t ? 'Traiter à nouveau' : 'Traiter')}
+        {verif ? <ShieldCheck size={13} /> : <UserCheck size={13} />} {verif ? 'Vérifier' : 'Traiter'}
       </button>
     );
   };
+  const formGeste = (r: Relance, rail: Rail | null, actionCode: string | null, mode: 'traiter' | 'verifier') =>
+    formOuvert === r.id && (
+      <FormGeste mode={mode} onAnnuler={() => setFormOuvert(null)}
+        onValider={(c, v) => consigner(r, rail, actionCode, c, v)} />
+    );
 
   const boutonJour = (val: string, texte: string) => (
     <button
       onClick={() => choisirJour(val)}
       style={{
-        padding: '6px 14px', borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif',
+        padding: '0 14px', minHeight: 32, borderRadius: 'var(--r-md)', fontFamily: 'Lexend,sans-serif',
         fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
         border: '1px solid ' + (jour === val ? 'var(--blue)' : 'var(--border)'),
         background: jour === val ? 'var(--blue)' : 'white',
@@ -474,43 +503,201 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
       }}>{texte}</button>
   );
 
-  /** Le nom d'une patiente, cliquable : il ouvre tout son parcours. */
-  const nomCliquable = (r: Relance) => {
+  /** Le nom d'une patiente, cliquable : il ouvre tout son parcours. Dessous : numéro, fin. */
+  const cellulePatiente = (r: Relance) => {
     const nom = [r.nom, r.prenom].filter(Boolean).join(' ');
     return (
-      <button
-        onClick={() => setParcours({ ids: [r.id], nom })}
-        title="Voir tout son parcours : appels, SMS, mails, gestes de l’équipe"
-        style={{
-          border: 'none', background: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
-          fontWeight: 600, color: 'var(--text)', fontSize: 'inherit', fontFamily: 'inherit',
-          textDecoration: 'underline', textDecorationColor: 'var(--border)', textUnderlineOffset: 3,
-        }}>{nom || '—'}</button>
+      <div className="c-nom">
+        <button
+          onClick={() => setParcours({ ids: [r.id], nom })}
+          title="Voir tout son parcours : appels, SMS, mails, gestes de l’équipe"
+          style={{
+            border: 'none', background: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+            fontWeight: 700, color: 'var(--text)', fontSize: 13, fontFamily: 'inherit',
+            textDecoration: 'underline', textDecorationColor: 'var(--border)', textUnderlineOffset: 3,
+          }}>{nom || '—'}</button>
+        <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', marginTop: 1 }}>
+          {r.telephone || 'pas de téléphone'}
+          {/* La FIN DE LOCATION, pas l'« applicable du » : c'est la date que la patiente
+              connaît, et celle qu'annoncent les SMS. */}
+          {/* Jour et mois seulement : la purge RGPD borne le stock à trois mois, l'année
+              n'apprend rien et faisait passer la cellule sur deux lignes. */}
+          {/* ⚠️ Le séparateur voyage AVEC la date, dans le même bloc insécable : sinon, sur
+              une colonne étroite, la ligne du numéro se terminait par un « · » orphelin. */}
+          {r.date_echeance && (
+            <span style={{ whiteSpace: 'nowrap' }}> · fin de location {formatDate(decalerJours(r.date_echeance, -1)).slice(0, 5)}</span>
+          )}
+        </span>
+      </div>
     );
   };
 
-  return (
-    <div>
-      {/* ── Retrouver une patiente, quelle que soit sa date d'entrée ────────── */}
-      {/* ⚠️ Cherche dans TOUT le stock chargé (trois mois, purge RGPD), pas dans la journée
-          choisie : c'est ce que le client a demandé — « peu importe quand elle a été
-          insérée dans le parcours ». */}
-      <div style={{
-        padding: '12px 16px', background: 'var(--card)', border: '1px solid var(--border)',
-        borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-3)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
-          <Search size={15} style={{ color: 'var(--muted)' }} />
-          <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--muted)' }}>RETROUVER UNE PATIENTE</span>
-          <SearchInput
-            valeur={recherche} onChange={setRecherche} largeur={340}
-            placeholder="Nom, prénom, téléphone ou e-mail…" />
-          <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>
-            sur tout le parcours, quelle que soit sa date d’entrée
+  /** CE QUI A ÉTÉ FAIT — les trois canaux côte à côte, tous datés DANS LE RAIL. */
+  const celluleCanaux = (b: Bilan) => (
+    <div className="c-canaux">
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
+        <PuceCanal canal="appel" e={b.appel} />
+        {b.appel.tente && <BoutonTranscript relance={b.r} onOuvrir={setTranscrit} taille={22} />}
+        <PuceCanal canal="sms" e={b.sms} />
+        <PuceCanal canal="mail" e={b.mail} />
+      </div>
+      {b.r.dernier_appel && (
+        <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+          dernier appel le {formatDate(jourLocal(b.r.dernier_appel))}
+          {' · '}{b.r.nb_tentatives ?? 0}/{PLAFOND_TENTATIVES} tentatives
+        </span>
+      )}
+    </div>
+  );
+
+  const celluleConsigne = (b: Bilan) => (
+    <div className="c-consigne" style={{
+      fontSize: 12.5, lineHeight: 1.45, color: COULEUR_ACTION[b.action.gravite],
+      fontWeight: b.action.gravite === 'alerte' ? 700 : b.action.gravite === 'attente' ? 600 : 500,
+    }}>{b.action.texte}</div>
+  );
+
+  /** Une ligne de la journée : à traiter (avec son bouton) ou du reste (sans). */
+  const ligneJournee = ({ b, rail }: { b: Bilan; rail: Rail }, avecGeste: boolean) => (
+    <div key={b.r.id} className="ctl-ligne">
+      <div className="c-etape"><BadgeRail rail={rail} /></div>
+      {cellulePatiente(b.r)}
+      <div className="c-etat"><PastilleEtat b={b} /></div>
+      {celluleCanaux(b)}
+      {celluleConsigne(b)}
+      <div className="ctl-act">{avecGeste && boutonGeste(b.r, 'traiter')}</div>
+      {avecGeste && formGeste(b.r, rail, b.action.code, 'traiter')}
+    </div>
+  );
+
+  /**
+   * Une déclaration : ce que la patiente a dit, et ce qu'ORTHOP en dit.
+   *
+   * ⚠️ LE RECOUPEMENT EST LA CONSIGNE : la déclaration vient d'un modèle qui interprète un
+   * transcript, ORTHOP est la preuve. « Couverte jusqu'au… » et « ORTHOP la réclame
+   * toujours » n'appellent pas du tout la même suite.
+   */
+  const ligneDeclaration = ({ r, rail }: { r: Relance; rail: Rail | null }) => {
+    const couverte = couverteAujourdhui(r, jour);
+    return (
+      <div key={r.id} className="ctl-ligne">
+        <div className="c-etape"><BadgeRail rail={rail} /></div>
+        {cellulePatiente(r)}
+        <div className="c-etat"><Chip texte="Dit avoir envoyé" ton="attente" titre="Elle l’a dit pendant un appel" /></div>
+        <div className="c-canaux">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', fontSize: 12.5, color: 'var(--text-2)' }}>
+            {/* ⚠️ LE TRANSCRIPT COMPTE DOUBLE ICI : la déclaration « j'ai déjà envoyé » est
+                produite par un MODÈLE qui interprète cet appel. */}
+            <span>L’a dit au téléphone le <strong>{r.dernier_appel ? formatDate(jourLocal(r.dernier_appel)) : '—'}</strong></span>
+            {r.dernier_appel && <BoutonTranscript relance={r} onOuvrir={setTranscrit} taille={22} />}
+          </div>
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+            elle n’est plus appelée tant que personne n’a vérifié
           </span>
         </div>
+        <div className="c-consigne" style={{ fontSize: 12.5, lineHeight: 1.45, fontWeight: 600,
+                                             color: couverte ? '#15803d' : 'var(--st-attente-fg)' }}>
+          {couverte
+            ? <><ShieldCheck size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+                Couverte jusqu’au {formatDate(String(r.fin_application).slice(0, 10))} dans ORTHOP — confirmez-le</>
+            : 'ORTHOP la réclame toujours — contrôlez dans ORTHOP'}
+        </div>
+        <div className="ctl-act">{boutonGeste(r, 'verifier')}</div>
+        {formGeste(r, rail, 'verifier', 'verifier')}
+      </div>
+    );
+  };
+
+  /** Ce qui a été consigné : qui, quand, la réponse ORTHOP, le commentaire, la consigne. */
+  const ligneFaite = ({ t, r }: { t: Traitement; r: Relance }) => {
+    const rail = RAILS_RELANCES.find(x => x.code === t.etape) ?? railAtteint(r, jour);
+    const verbe = t.verif_orthop ? 'Vérifiée' : 'Traitée';
+    const consigne = t.action_code ? LIB_GESTE[t.action_code as ActionDossier['code']] : undefined;
+    return (
+      <div key={t.id} className="ctl-ligne" style={{ background: '#fbfefc' }}>
+        <div className="c-etape"><BadgeRail rail={rail} /></div>
+        {cellulePatiente(r)}
+        <div className="c-etat"><Chip texte={verbe} ton="ok" titre={verbe + ' par ' + t.traite_par + ' le ' + formatDateTime(t.traite_le)} /></div>
+        <div className="c-canaux ctl-large" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, color: '#15803d' }}>
+            <UserCheck size={13} /> {verbe} par {t.traite_par}
+            <span style={{ fontWeight: 500, color: '#166534' }}>
+              · {formatDateTime(t.traite_le)}
+              {t.verif_orthop && <> · ORTHOP : {t.verif_orthop === 'recue' ? 'ordonnance reçue' : 'pas encore reçue'}</>}
+            </span>
+          </span>
+          {t.commentaire && (
+            <span style={{ fontSize: 12.5, color: 'var(--text)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>« {t.commentaire} »</span>
+          )}
+          {consigne && <span style={{ fontSize: 11.5, color: 'var(--muted)' }}>Consigne d’origine : {consigne}</span>}
+        </div>
+        <div className="ctl-act" />
+      </div>
+    );
+  };
+
+  /* ── Le titre de la file : ce qu'il reste, ou pourquoi il n'y a rien ─────────────── */
+  const jourCourt = formatDateLongue(jour);
+  const fini = restant === 0 && !contexteExplique && (totalDu > 0 || faites.length > 0);
+  const tonFile: 'attente' | 'ok' | 'neutre' = restant > 0 ? 'attente' : fini ? 'ok' : 'neutre';
+  const titreFile = restant > 0
+    ? (pendants.length > 0
+        ? `${restant} ${pluriel(restant, 'ligne', 'lignes')} à traiter`
+        : `${restant} ${pluriel(restant, 'déclaration', 'déclarations')} à vérifier`)
+    : fini ? 'Journée contrôlée'
+    : totalDu === 0 ? 'Rien à traiter'
+    : estWeekEnd ? 'Rien à traiter — c’est le week-end'
+    : enPause === true ? 'Rien à traiter — le module est en pause'
+    : 'Rien à traiter pour l’instant';
+  const sousFile = fini && faites.length > 0
+    ? `Les ${faites.length} ${pluriel(faites.length, 'ligne qui le demandait a été traitée', 'lignes qui le demandaient ont été traitées')}`
+    : fini ? `Les ${totalDu} patientes attendues ont toutes été jointes`
+    : totalDu === 0 ? 'Aucune étape ne tombait ce jour-là : il est normal qu’une journée soit vide'
+    : journeeEnCours ? 'Les lignes de la journée arriveront ici après 14h30'
+    : estWeekEnd ? 'Les patientes attendues sont reportées à lundi'
+    : null;
+
+  return (
+    <div>
+      {/* ── 1. La barre : la journée, la recherche, le mode d'emploi ───────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '10px 12px', flexWrap: 'wrap',
+        padding: '10px 14px', background: 'var(--card)', border: '1px solid var(--border)',
+        borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-3)',
+      }}>
+        {boutonJour(ajd, 'Aujourd’hui')}
+        {boutonJour(hier, 'Hier')}
+        <input
+          type="date" value={jour} max={ajd} aria-label="Choisir la journée contrôlée"
+          onChange={e => { if (e.target.value) choisirJour(e.target.value); }}
+          style={{
+            padding: '0 9px', minHeight: 32, borderRadius: 'var(--r-md)', border: '1px solid var(--border)',
+            fontSize: 12.5, fontFamily: 'inherit', color: 'var(--text)',
+          }} />
+        <span style={{ fontSize: 12.5, color: 'var(--muted)', fontWeight: 600 }}>{jourCourt}</span>
+        {/* ⚠️ Cherche dans TOUT le stock chargé (trois mois, purge RGPD), pas dans la journée
+            choisie : c'est ce que le client a demandé — « peu importe quand elle a été
+            insérée dans le parcours ». */}
+        <div style={{ flex: '1 1 260px', minWidth: 220 }}>
+          <SearchInput
+            valeur={recherche} onChange={setRecherche} largeur="100%"
+            placeholder="Retrouver une patiente (tout le parcours) — nom, téléphone, e-mail" />
+        </div>
+        {/* ⚠️ Le mode opératoire est servi par nginx depuis `public/docs/` : un lien, pas
+            un fichier à retrouver dans le dépôt. Chemin ABSOLU — l'application est une SPA,
+            un chemin relatif dépendrait de la route affichée. */}
+        <a
+          href="/docs/mode-op-controle-journee.html" target="_blank" rel="noopener noreferrer"
+          title="Comment contrôler la journée — document imprimable, s’ouvre dans un onglet"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none',
+            padding: '0 11px', minHeight: 32, borderRadius: 'var(--r-md)', border: '1px solid var(--border)',
+            background: 'white', color: 'var(--muted)', fontSize: 12, fontWeight: 600,
+          }}>
+          <BookOpen size={13} /> Mode d’emploi
+        </a>
         {recherche.trim().length >= 2 && (
-          <div style={{ marginTop: 10 }}>
+          <div style={{ width: '100%' }}>
             {trouvees.total === 0 ? (
               <p style={{ margin: '2px 0 0', fontSize: 12.5, color: 'var(--muted)' }}>
                 Aucune patiente ne correspond. Les dossiers de plus de trois mois sont effacés (RGPD).
@@ -559,407 +746,180 @@ export function ControleJournee({ relances, enPause, motifPause, token, onRelanc
         )}
       </div>
 
-      {/* ── Le jour contrôlé ───────────────────────────────────────────────── */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap',
-        padding: '12px 16px', background: 'var(--card)', border: '1px solid var(--border)',
-        borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-4)',
-      }}>
-        <CalendarDays size={15} style={{ color: 'var(--muted)' }} />
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--muted)' }}>JOURNÉE CONTRÔLÉE</span>
-        {boutonJour(ajd, 'Aujourd’hui')}
-        {boutonJour(hier, 'Hier')}
-        <input
-          type="date" value={jour} max={ajd}
-          onChange={e => { if (e.target.value) choisirJour(e.target.value); }}
-          style={{
-            padding: '5px 9px', borderRadius: 'var(--r-md)', border: '1px solid var(--border)',
-            fontSize: 12.5, fontFamily: 'inherit', color: 'var(--text)',
-          }} />
-        <span style={{ marginLeft: 'auto', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
-          {formatDateLongue(jour)}
-        </span>
-        {/* ⚠️ Le mode opératoire est servi par nginx depuis `public/docs/` : un lien, pas
-            un fichier à retrouver dans le dépôt. Chemin ABSOLU — l'application est une SPA,
-            un chemin relatif dépendrait de la route affichée. */}
-        <a
-          href="/docs/mode-op-controle-journee.html" target="_blank" rel="noopener noreferrer"
-          title="Comment contrôler la journée — document imprimable, s’ouvre dans un onglet"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none',
-            padding: '5px 11px', borderRadius: 'var(--r-md)', border: '1px solid var(--border)',
-            background: 'white', color: 'var(--muted)', fontSize: 12, fontWeight: 600,
-          }}>
-          <BookOpen size={13} /> Mode d’emploi
-        </a>
-      </div>
-
-      {/* ⚠️ Sans les traitements, toutes les lignes traitées redeviendraient rouges et
+      {/* ⚠️ Sans les traitements, toutes les lignes traitées redeviendraient à faire et
           l'équipe les retraiterait : l'échec de lecture se dit, et bloque les boutons. */}
       {etatTraitements === 'erreur' && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
-                      background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 'var(--r-lg)',
-                      marginBottom: 'var(--sp-3)' }}>
-          <AlertTriangle size={16} style={{ color: '#b91c1c', flexShrink: 0, marginTop: 1 }} />
-          <p style={{ fontSize: 12.5, color: '#991b1b', margin: 0, lineHeight: 1.55 }}>
-            <strong>Les traitements déjà consignés n’ont pas pu être lus.</strong> Des lignes déjà
-            traitées peuvent apparaître en rouge. Rechargez la page avant de traiter quoi que ce soit.
-          </p>
-        </div>
+        <Bandeau icone={<AlertTriangle size={16} />} fond="#fef2f2" bord="#fecaca" couleur="#991b1b">
+          <strong>Les traitements déjà consignés n’ont pas pu être lus.</strong> Des lignes déjà
+          traitées peuvent apparaître comme à faire. Rechargez la page avant de traiter quoi que ce soit.
+        </Bandeau>
       )}
 
       {/* ⚠️ TROIS raisons parfaitement NORMALES de ne voir personne de joint. Les taire
           ferait passer une décision, un week-end, ou une heure trop matinale, pour une panne. */}
       {estWeekEnd && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
-                      background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
-                      marginBottom: 'var(--sp-3)' }}>
-          <CalendarDays size={16} style={{ color: 'var(--muted)', flexShrink: 0, marginTop: 1 }} />
-          <p style={{ fontSize: 12.5, color: 'var(--text)', margin: 0, lineHeight: 1.55 }}>
-            <strong>C’est le week-end — aucun appel n’est prévu.</strong> Depuis le 18/09, le
-            recouvrement ne sollicite personne le samedi ni le dimanche : ni appel, ni SMS, ni
-            mail. Les patientes ci-dessous sont bien attendues, mais elles seront traitées
-            <strong> lundi</strong>, avec la cohorte du lundi. Rien à signaler ici.
-          </p>
-        </div>
+        <Bandeau icone={<CalendarDays size={16} />} fond="#f8fafc" bord="var(--border)" couleur="var(--muted)">
+          <strong>C’est le week-end — aucun appel n’est prévu.</strong> Le recouvrement ne sollicite
+          personne le samedi ni le dimanche : ni appel, ni SMS, ni mail. Les patientes attendues seront
+          traitées <strong>lundi</strong>, avec la cohorte du lundi. Rien à signaler ici.
+        </Bandeau>
       )}
       {enPause === true && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
-                      background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 'var(--r-lg)',
-                      marginBottom: 'var(--sp-3)' }}>
-          <PauseCircle size={16} style={{ color: '#4338ca', flexShrink: 0, marginTop: 1 }} />
-          <p style={{ fontSize: 12.5, color: '#3730a3', margin: 0, lineHeight: 1.55 }}>
-            <strong>Le recouvrement est en pause.</strong> Aucun appel, SMS ou mail automatique ne
-            part — il est donc normal que des patientes apparaissent ci-dessous comme non jointes.
-            {motifPause ? <> Motif : {motifPause}.</> : null}
-          </p>
-        </div>
+        <Bandeau icone={<PauseCircle size={16} />} fond="#eef2ff" bord="#c7d2fe" couleur="#3730a3">
+          <strong>Le recouvrement est en pause.</strong> Aucun appel, SMS ou mail automatique ne
+          part — il est donc normal que des patientes apparaissent comme non jointes.
+          {motifPause ? <> Motif : {motifPause}.</> : null}
+        </Bandeau>
       )}
       {journeeEnCours && (
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
-                      background: '#f8fafc', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
-                      marginBottom: 'var(--sp-3)' }}>
-          <Clock size={16} style={{ color: 'var(--muted)', flexShrink: 0, marginTop: 1 }} />
-          <p style={{ fontSize: 12.5, color: 'var(--text)', margin: 0, lineHeight: 1.55 }}>
-            <strong>La journée n’est pas finie.</strong> Les appels passent de 12h30 à 13h55 et les
-            écrits de rattrapage à 14h30 : avant cette heure, il est normal que peu de patientes
-            aient été jointes. <strong>Pour un vrai contrôle, revenez après 14h30, ou regardez « Hier ».</strong>
-          </p>
-        </div>
+        <Bandeau icone={<Clock size={16} />} fond="#f8fafc" bord="var(--border)" couleur="var(--muted)">
+          <strong>La journée n’est pas finie.</strong> Les appels passent de 12h30 à 13h55 et les
+          écrits de rattrapage à 14h30 : les lignes de la journée n’entrent dans « À faire »
+          qu’après. <strong>Pour un vrai contrôle, revenez après 14h30, ou regardez « Hier ».</strong>
+        </Bandeau>
       )}
 
-      {/* ── Le verdict, en une phrase ──────────────────────────────────────── */}
-      <div style={{
-        display: 'flex', alignItems: 'flex-start', gap: 12, padding: '16px 18px',
-        borderRadius: 'var(--r-lg)', marginBottom: 'var(--sp-4)',
-        background: alerte ? '#fffbeb' : '#f0fdf4',
-        border: '1px solid ' + (alerte ? '#fde68a' : '#86efac'),
+      {/* ── 2. La file « À faire » ─────────────────────────────────────────── */}
+      <section className="ctl-file" aria-labelledby="ctl-file-titre" style={{
+        background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
+        overflow: 'hidden', marginBottom: 'var(--sp-3)',
+        borderLeft: '4px solid ' + (tonFile === 'attente' ? 'var(--st-attente-bd)' : tonFile === 'ok' ? 'var(--st-ok2-bd)' : 'var(--border)'),
       }}>
-        {alerte
-          ? <AlertTriangle size={20} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
-          : <CheckCircle size={20} style={{ color: '#15803d', flexShrink: 0, marginTop: 1 }} />}
-        <div>
-          <p style={{
-            margin: 0, fontFamily: 'Lexend,sans-serif', fontSize: 15, fontWeight: 800,
-            color: alerte ? '#92400e' : '#15803d',
-          }}>
-            {/* ⚠️ La phrase suit le CONTEXTE, pas seulement les chiffres. « 0 patiente jointe
-                sur 135 » est exact à 8h du matin, et c'est pourtant le pire résumé
-                possible : la journée n'a pas commencé. */}
-            {totalDu === 0
-              ? 'Aucune étape ne tombait ce jour-là.'
-              : estWeekEnd
-                ? `${totalDu} patientes attendues — reportées à lundi.`
-                : enPause === true && totalJointes === 0
-                  ? `${totalDu} patientes attendues — le module est en pause.`
-                  : journeeEnCours && totalJointes === 0
-                    ? `${totalDu} patientes attendues aujourd’hui — les appels commencent à 12h30.`
-                    : totalManques === 0
-                      ? `Les ${totalDu} patientes attendues ont toutes été jointes.`
-                      : `${totalJointes} patiente${totalJointes > 1 ? 's' : ''} jointe${totalJointes > 1 ? 's' : ''} sur ${totalDu} — ${totalManques} sans aucun contact.`}
-          </p>
-          <p style={{ margin: '5px 0 0', fontSize: 12.5, color: alerte ? '#92400e' : '#15803d', lineHeight: 1.55 }}>
-            {totalDu === 0
-              ? 'Les étapes du parcours tombent à des jours précis : il est normal qu’une journée soit vide.'
-              : <>
-                  {!contexteExplique && (totalATraiter > 0
-                    ? <><strong>{totalATraiter} ligne{totalATraiter > 1 ? 's' : ''} à traiter</strong>{totalTraitees > 0 ? ` · ${totalTraitees} déjà traitée${totalTraitees > 1 ? 's' : ''}` : ''}. </>
-                    : totalTraitees > 0
-                      ? <><strong>Toutes les lignes qui le demandaient ont été traitées</strong> ({totalTraitees}). </>
-                      : null)}
-                  « Jointe » veut dire que <strong>quelque chose lui est parvenu</strong> : elle a parlé, un
-                  message vocal a été déposé, ou un SMS / mail a été <strong>livré</strong>. Un appel qui sonne
-                  dans le vide ne compte pas.
-                  {totalJamaisTente > 0 && (
-                    <> <strong>Dont {totalJamaisTente} pour {totalJamaisTente > 1 ? 'lesquelles' : 'laquelle'} rien n’a même
-                    été tenté</strong> — ni appel, ni SMS, ni mail.</>
-                  )}
-                </>}
-          </p>
-        </div>
-      </div>
-
-      {/* ── Le compte par étape ────────────────────────────────────────────── */}
-      <h3 style={{ fontFamily: 'Lexend,sans-serif', fontSize: 13, fontWeight: 800, color: 'var(--text)', margin: '0 0 10px' }}>
-        Par étape
-      </h3>
-      <div style={{ marginBottom: 'var(--sp-5)' }}>
-        <DataTable colonnes={['Étape', 'Attendues', 'Jointes à la voix', 'Jointes par écrit', 'Sans aucun contact', 'Reste à traiter']}>
-          {enService.map(e => (
-            <tr key={e.rail.code}>
-              <td style={{ ...tdStyle, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                {e.rail.libelle}
-                <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 8, fontSize: 'var(--fs-sm)' }}>
-                  {e.rail.titre}
-                </span>
-              </td>
-              <td style={tdStyle}>{e.surEtape}</td>
-              <td style={tdDiscret}>{e.voix}</td>
-              <td style={tdDiscret}>{e.ecrit}</td>
-              <td style={tdStyle}>
-                {e.manques === 0
-                  ? <Chip texte="0" ton="ok" />
-                  : <Chip texte={String(e.manques)} ton="attente" />}
-              </td>
-              <td style={tdStyle}>
-                {e.aTraiter === 0
-                  ? <Chip texte="0" ton="ok" />
-                  : <Chip texte={String(e.aTraiter)} ton={contexteExplique ? 'neutre' : 'echec'} />}
-              </td>
-            </tr>
-          ))}
-        </DataTable>
-        {aVenir.length > 0 && (
-          /* ⚠️ Montrées SÉPARÉMENT et hors du verdict : sans agent ni cron, 100 % de leurs
-             dossiers sont « sans contact » — ce n'est pas un manquement, c'est une étape
-             qui n'existe pas encore. */
-          <p style={{ fontSize: 12, color: 'var(--muted)', margin: '10px 2px 0', lineHeight: 1.6 }}>
-            Étapes pas encore automatisées ce jour-là, volontairement hors du compte ci-dessus :{' '}
-            {aVenir.map(e => `${e.rail.libelle} (${e.surEtape} dossiers)`).join(', ')}. Aucun agent ni
-            envoi automatique n’y est branché — il est normal que personne n’y ait été contacté.
-          </p>
-        )}
-      </div>
-
-      {/* ── Les deux listes, en petits onglets ─────────────────────────────── */}
-      <div style={{ display: 'inline-flex', background: '#f1f5f9', borderRadius: 11, padding: 3, gap: 2, marginBottom: 'var(--sp-3)' }}>
-        {([
-          { id: 'journee' as const, label: 'La journée', n: totalDu },
-          { id: 'declare' as const, label: 'Disent avoir envoyé', n: declares.total },
-        ]).map(o => {
-          const actif = liste === o.id;
-          return (
-            <button key={o.id} onClick={() => { setListe(o.id); setFormOuvert(null); }} style={{
-              padding: '6px 15px', border: 'none', borderRadius: 9, cursor: 'pointer',
-              fontFamily: 'Lexend,sans-serif', fontSize: 12.5, fontWeight: actif ? 800 : 600,
-              background: actif ? 'white' : 'transparent',
-              color: actif ? 'var(--blue)' : 'var(--muted)',
-              boxShadow: actif ? '0 1px 4px rgba(0,0,0,.1)' : 'none',
-              display: 'flex', alignItems: 'center', gap: 7,
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px 24px',
+                      flexWrap: 'wrap', padding: '14px var(--sp-4) 12px' }}>
+          <div>
+            <p style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0, fontFamily: 'Lexend,sans-serif',
+                        fontSize: 11, fontWeight: 800, letterSpacing: '.6px', textTransform: 'uppercase', color: 'var(--muted)' }}>
+              <ClipboardCheck size={12} /> À faire
+            </p>
+            <p id="ctl-file-titre" style={{
+              display: 'flex', alignItems: 'center', gap: 8, margin: '3px 0 0',
+              fontFamily: 'Lexend,sans-serif', fontSize: 20, fontWeight: 800, lineHeight: 1.25,
+              color: tonFile === 'attente' ? 'var(--st-attente-fg)' : tonFile === 'ok' ? '#15803d' : 'var(--text)',
             }}>
-              {o.label}
-              <span style={{
-                padding: '1px 7px', borderRadius: 999, fontSize: 11, fontWeight: 800,
-                background: o.n > 0 ? 'var(--st-neutre-bg)' : 'var(--st-ok-bg)',
-                color: o.n > 0 ? 'var(--muted)' : 'var(--st-ok-fg)',
-              }}>{o.n}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* ── Liste 1 : TOUTE la journée, une ligne par patiente ─────────────── */}
-      {liste === 'journee' && (totalDu === 0 ? (
-        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
-          Aucune patiente n’était attendue sur les étapes en service ce jour-là.
-        </p>
-      ) : (
-        <>
-          {/* Les vues. ⚠️ Le compteur est celui du périmètre que le clic affichera — une
-              pastille qui annonce un nombre et ouvre un tableau différent est la panne
-              exacte relevée le 2026-09-16 sur les tuiles du Parcours. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 'var(--sp-3)' }}>
-            {VUES.map(v => {
-              const on = filtre === v.id;
-              const crie = v.alerte && v.n > 0;
-              return (
-                <button key={v.id} onClick={() => setFiltre(v.id)} style={{
-                  padding: '5px 13px', borderRadius: 999, cursor: 'pointer',
-                  fontFamily: 'Lexend,sans-serif', fontSize: 12, fontWeight: on ? 800 : 600,
-                  border: '1px solid ' + (on ? 'var(--blue)' : 'var(--border)'),
-                  background: on ? 'var(--blue)' : 'white',
-                  color: on ? 'white' : 'var(--text)',
-                  display: 'inline-flex', alignItems: 'center', gap: 7,
-                }}>
-                  {v.label}
-                  <span style={{
-                    padding: '0 6px', borderRadius: 999, fontSize: 11, fontWeight: 800,
-                    background: on ? 'rgba(255,255,255,.25)' : (crie ? 'var(--st-echec-bg)' : 'var(--st-neutre-bg)'),
-                    color: on ? 'white' : (crie ? 'var(--st-echec-fg)' : 'var(--muted)'),
-                  }}>{v.n}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {totalAffiche === 0 ? (
-            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
-              Aucune patiente dans cette vue pour la journée choisie.
+              {tonFile === 'ok' && <CheckCircle size={20} />}{titreFile}
             </p>
-          ) : etapesAffichees.map(e => (
-            <div key={e.rail.code} style={{ marginBottom: 'var(--sp-4)' }}>
-              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px', flexWrap: 'wrap' }}>
-                <BadgeRail rail={e.rail} />
-                <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-                  {e.visibles.length === e.surEtape
-                    ? `${e.surEtape} patiente${e.surEtape > 1 ? 's' : ''} attendue${e.surEtape > 1 ? 's' : ''}`
-                    : `${e.visibles.length} sur ${e.surEtape} attendues`}
-                  {' · '}{e.jointes} jointe{e.jointes > 1 ? 's' : ''}
-                  {e.manques > 0 && <> · <strong style={{ color: '#b91c1c' }}>{e.manques} sans contact</strong></>}
-                  {e.traitees > 0 && <> · <strong style={{ color: '#15803d' }}>{e.traitees} traitée{e.traitees > 1 ? 's' : ''}</strong></>}
+            <p style={{ margin: '3px 0 0', fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+              {sousFile && <>{sousFile} · </>}
+              {/* ⚠️ La phrase suit le CONTEXTE, pas seulement les chiffres : « 0 jointe sur
+                  135 » est exact à 8h du matin, et c'est pourtant le pire résumé possible. */}
+              {totalDu > 0 && <>
+                {totalDu} {pluriel(totalDu, 'patiente attendue', 'patientes attendues')} ·{' '}
+                <span title="« Jointe » : quelque chose lui est parvenu — elle a parlé, un message vocal a été déposé, ou un SMS / mail a été livré. Un appel qui sonne dans le vide ne compte pas."
+                      style={{ textDecoration: 'underline dotted', textUnderlineOffset: 3, cursor: 'help' }}>
+                  {totalJointes} {pluriel(totalJointes, 'jointe', 'jointes')}
                 </span>
-              </p>
-              <DataTable colonnes={['État', 'Patiente', 'Fin de location', 'Ce qui a été fait', 'Action à réaliser']}>
-                {e.visibles.map(b => {
-                  const t = traitements.get(b.r.id);
-                  const aFaire = demandeUnGeste(b);
-                  return (
-                    <tr key={b.r.id}>
-                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
-                        <PastilleEtat b={b} t={t} />
-                      </td>
-                      <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
-                        {nomCliquable(b.r)}
-                        <br />
-                        <span style={{ color: 'var(--muted)', fontSize: 'var(--fs-sm)' }}>
-                          {b.r.telephone || 'pas de téléphone'}
-                        </span>
-                      </td>
-                      <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
-                        {/* La FIN DE LOCATION, pas l'« applicable du » : c'est la date que la
-                            patiente connaît, et celle qu'annoncent les SMS. */}
-                        {b.r.date_echeance ? formatDate(decalerJours(b.r.date_echeance, -1)) : '—'}
-                      </td>
-                      {/* ⚠️ CE QUI A ÉTÉ FAIT — les trois canaux, tous datés DANS LE RAIL. */}
-                      <td style={tdStyle}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'flex-start' }}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                            <Chip texte={b.appel.texte} ton={b.appel.ton} />
-                            {b.appel.tente && (
-                              <BoutonTranscript relance={b.r} onOuvrir={setTranscrit} taille={22} />
-                            )}
-                          </span>
-                          <Chip texte={b.sms.texte} ton={b.sms.ton} />
-                          <Chip texte={b.mail.texte} ton={b.mail.ton} />
-                          {b.r.dernier_appel && (
-                            <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                              dernier appel le {formatDate(jourLocal(b.r.dernier_appel))}
-                              {' · '}{b.r.nb_tentatives ?? 0}/{PLAFOND_TENTATIVES} tentatives
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      {/* ⚠️ La consigne reste écrite même une fois la ligne traitée : c'est ce
-                          qu'on a traité, et le commentaire n'a de sens qu'à côté d'elle. */}
-                      <td style={tdStyle}>
-                        <span style={{
-                          color: t ? 'var(--muted)' : COULEUR_ACTION[b.action.gravite],
-                          fontWeight: !t && b.action.gravite === 'alerte' ? 700 : 500,
-                        }}>
-                          {!t && b.action.gravite === 'alerte' && (
-                            <PhoneOff size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
-                          )}
-                          {b.action.texte}
-                        </span>
-                        {t && <BlocTraite t={t} />}
-                        {/* ⚠️ Pas de bouton sur une ligne déjà traitée : on ne retraite pas une
-                            ligne verte par mégarde. Seule une vérification ORTHOP encore due
-                            (le drapeau est toujours levé) garde son bouton. */}
-                        {aFaire && (!t || b.action.code === 'verifier') && (
-                          <div>{geste(b.r, e.rail, b.action.code, b.action.code === 'verifier' ? 'verifier' : 'traiter')}</div>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </DataTable>
-            </div>
-          ))}
-        </>
-      ))}
-
-      {/* ── Liste 2 : elles disent avoir envoyé leur ordonnance ────────────── */}
-      {liste === 'declare' && (declares.total === 0 ? (
-        <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 2px 0' }}>
-          Aucune déclaration en attente de vérification.
-        </p>
-      ) : (
-        <>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
-                        background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 'var(--r-lg)',
-                        marginBottom: 'var(--sp-3)' }}>
-            <MessageSquareWarning size={16} style={{ color: '#b45309', flexShrink: 0, marginTop: 1 }} />
-            <p style={{ fontSize: 12.5, color: '#92400e', margin: 0, lineHeight: 1.55 }}>
-              Ces patientes ont dit, pendant un appel, avoir déjà envoyé leur ordonnance.
-              Tant que personne ne vérifie, <strong>elles ne sont plus appelées</strong>.
-              <strong> Cette liste n’est pas limitée à la journée choisie</strong> : elle reste
-              affichée tant qu’elle n’a pas été traitée. « Vérifier » retire le signalement,
-              consigne ce que vous avez vu dans ORTHOP avec votre nom, et remet la patiente
-              dans le parcours.
+                {totalManques > 0 && !contexteExplique && <> · {totalManques} sans aucun contact
+                  {totalJamaisTente > 0 && <>, dont {totalJamaisTente} où rien n’a même été tenté</>}</>}
+              </>}
+              {etatTraitements === 'chargement' && <> · lecture des traitements…</>}
             </p>
           </div>
-          {declares.groupes.map(g => (
-            <div key={g.rail ? g.rail.code : 'hors'} style={{ marginBottom: 'var(--sp-4)' }}>
-              <p style={{ display: 'flex', alignItems: 'center', gap: 9, margin: '0 0 7px' }}>
-                <BadgeRail rail={g.rail} />
-                <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-                  {g.lignes.length} patiente{g.lignes.length > 1 ? 's' : ''} — étape atteinte
-                </span>
-              </p>
-              <DataTable colonnes={['Nom', 'Téléphone', 'Fin de location', 'L’a dit le', 'Ce qu’ORTHOP en dit', 'Action à réaliser']}>
-                {g.lignes.map(r => (
-                  <tr key={r.id}>
-                    <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{nomCliquable(r)}</td>
-                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>{r.telephone || '—'}</td>
-                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
-                      {r.date_echeance ? formatDate(decalerJours(r.date_echeance, -1)) : '—'}
-                    </td>
-                    {/* ⚠️ LE TRANSCRIPT COMPTE DOUBLE ICI : la déclaration « j'ai déjà
-                        envoyé » est produite par un MODÈLE qui interprète cet appel. */}
-                    <td style={{ ...tdDiscret, whiteSpace: 'nowrap' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-                        {r.dernier_appel ? formatDate(jourLocal(r.dernier_appel)) : '—'}
-                        {r.dernier_appel && <BoutonTranscript relance={r} onOuvrir={setTranscrit} taille={22} />}
-                      </span>
-                    </td>
-                    {/* ⚠️ LE RECOUPEMENT : la déclaration vient d'un modèle, ORTHOP est la preuve. */}
-                    <td style={tdStyle}>
-                      {couverteAujourdhui(r, jour)
-                        ? <span style={{ color: '#15803d', fontWeight: 700 }}>
-                            ordonnance enregistrée — couverte jusqu’au{' '}
-                            {formatDate(String(r.fin_application).slice(0, 10))}
-                          </span>
-                        : <span style={{ color: 'var(--muted)' }}>
-                            ORTHOP la réclame toujours — à contrôler
-                          </span>}
-                    </td>
-                    <td style={{ ...tdStyle, minWidth: 190 }}>
-                      {geste(r, railAtteint(r, jour), 'verifier', 'verifier')}
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
+          {totalFile > 0 && (
+            <div style={{ minWidth: 230 }} aria-label={`${faites.length} traitées sur ${totalFile}`}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, color: 'var(--muted)', marginBottom: 5 }}>
+                <span><strong style={{ color: 'var(--text)' }}>{faites.length}</strong> {pluriel(faites.length, 'traitée', 'traitées')} sur {totalFile}</span>
+                <span>{pct} %</span>
+              </div>
+              <div style={{ height: 8, borderRadius: 99, background: '#eef3f8', overflow: 'hidden' }}>
+                <div style={{ width: pct + '%', height: '100%', borderRadius: 99, background: 'var(--green)', transition: 'width .3s ease-out' }} />
+              </div>
             </div>
-          ))}
-        </>
-      ))}
+          )}
+        </div>
 
-      <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '18px 2px 0', lineHeight: 1.6 }}>
-        Cet écran n’envoie rien : ni appel, ni SMS, ni mail. « Traiter » et « Vérifier » consignent
-        ce que vous avez fait, avec votre nom et l’heure — ils ne contactent personne. Les chiffres
-        reflètent l’état <strong>de maintenant</strong> — un SMS livré cette nuit apparaît donc sur la
-        journée d’hier, ce qui est voulu. Les patientes dont l’ordonnance est arrivée, ou couvertes
-        par une ordonnance en cours, ne sont pas comptées : aucun contact ne leur était dû.
+        {restant > 0 && (
+          <div className="ctl-cols">
+            <span>Étape</span><span>Patiente</span><span>État</span><span>Ce qui a été fait</span><span>Action à réaliser</span><span />
+          </div>
+        )}
+        {pendants.length > 0 && <>
+          <EnteteGroupe titre={'Sur la journée du ' + formatDate(jour).slice(0, 5)} n={pendants.length}
+            aide="personne ne leur a parlé et aucun écrit ne leur est parvenu" />
+          {pendants.map(x => ligneJournee(x, true))}
+        </>}
+        {declares.length > 0 && <>
+          <EnteteGroupe titre="Disent avoir envoyé leur ordonnance" n={declares.length}
+            aide="toutes dates confondues : la ligne reste là tant que personne n’a vérifié" />
+          {declares.map(ligneDeclaration)}
+        </>}
+        {faites.length > 0 && <>
+          <EnteteGroupe titre="Déjà traitées" n={faites.length} aide="qui, quand, et le commentaire" />
+          {faites.map(ligneFaite)}
+        </>}
+      </section>
+
+      {/* ── 3. Le reste de la journée, replié ───────────────────────────────── */}
+      <section style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 'var(--r-lg)',
+                        overflow: 'hidden', marginBottom: 'var(--sp-3)' }}>
+        <Deplier
+          ouvert={resteOuvert} onClick={() => setResteOuvert(o => !o)}
+          titre="Le reste de la journée"
+          detail={reste.length === 0
+            ? 'aucune autre patiente ce jour-là'
+            : reste.length === resteJointes
+              ? `${reste.length} ${pluriel(reste.length, 'patiente jointe', 'patientes jointes')} — rien à faire pour elles`
+              : `${reste.length} ${pluriel(reste.length, 'patiente', 'patientes')} · ${resteJointes} ${pluriel(resteJointes, 'jointe', 'jointes')} · ${reste.length - resteJointes} en attente`}
+          droite={enService.filter(e => e.surEtape > 0).map(e => (
+            <Chip key={e.rail.code} texte={`${e.rail.libelle} · ${e.jointes} / ${e.surEtape} ${pluriel(e.jointes, 'jointe', 'jointes')}`}
+                  ton={contexteExplique ? 'neutre' : 'ok2'} />
+          ))} />
+        {resteOuvert && reste.length > 0 && (
+          <div className="ctl-file" style={{ borderTop: '1px solid var(--border)' }}>
+            {reste.map(x => ligneJournee(x, false))}
+          </div>
+        )}
+        <div style={{ borderTop: '1px solid var(--border)' }}>
+          <Deplier
+            ouvert={chiffresOuverts} onClick={() => setChiffresOuverts(o => !o)}
+            titre="Chiffres par étape" detail="voix, écrit, sans contact, reste à traiter" />
+        </div>
+        {chiffresOuverts && (
+          <div style={{ borderTop: '1px solid var(--border)' }}>
+            <DataTable encadre={false} colonnes={['Étape', 'Attendues', 'Jointes à la voix', 'Jointes par écrit', 'Sans aucun contact', 'Reste à traiter']}>
+              {enService.map(e => (
+                <tr key={e.rail.code}>
+                  <td style={{ ...tdStyle, fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {e.rail.libelle}
+                    <span style={{ fontWeight: 400, color: 'var(--muted)', marginLeft: 8, fontSize: 'var(--fs-sm)' }}>
+                      {e.rail.titre}
+                    </span>
+                  </td>
+                  <td style={tdStyle}>{e.surEtape}</td>
+                  <td style={tdDiscret}>{e.voix}</td>
+                  <td style={tdDiscret}>{e.ecrit}</td>
+                  <td style={tdStyle}>
+                    <Chip texte={String(e.manques)} ton={e.manques === 0 ? 'ok' : 'attente'} />
+                  </td>
+                  <td style={tdStyle}>
+                    {e.aTraiter === 0
+                      ? <Chip texte="0" ton="ok" />
+                      : <Chip texte={String(e.aTraiter)} ton={contexteExplique ? 'neutre' : 'echec'} />}
+                  </td>
+                </tr>
+              ))}
+            </DataTable>
+            <p style={{ fontSize: 12, color: 'var(--muted)', margin: 0, padding: '10px var(--sp-4) 12px', lineHeight: 1.6,
+                        borderTop: '1px solid var(--border)' }}>
+              « Reste à traiter » ne compte pas les déclarations : elles ne dépendent pas de la journée.
+              {aVenir.length > 0 && (
+                /* ⚠️ Montrées SÉPARÉMENT et hors du compte : sans agent ni cron, 100 % de leurs
+                   dossiers sont « sans contact » — ce n'est pas un manquement, c'est une étape
+                   qui n'existe pas encore. */
+                <> Pas encore automatisées ce jour-là, donc hors du contrôle :{' '}
+                  {aVenir.map(e => `${e.rail.libelle} (${e.surEtape} dossiers)`).join(', ')}. Aucun agent ni
+                  envoi automatique n’y est branché — il est normal que personne n’y ait été contacté.</>
+              )}
+            </p>
+          </div>
+        )}
+      </section>
+
+      <p style={{ fontSize: 11.5, color: 'var(--muted)', margin: '14px 2px 0', lineHeight: 1.6 }}>
+        Cet écran ne contacte personne. « Traiter » et « Vérifier » consignent votre geste, avec votre
+        nom et l’heure. Les chiffres reflètent l’état <strong>de maintenant</strong> — un SMS livré cette
+        nuit apparaît donc sur la journée d’hier, ce qui est voulu. Les patientes dont l’ordonnance est
+        arrivée, ou couvertes par une ordonnance en cours, ne sont pas comptées : aucun contact ne leur était dû.
       </p>
 
       {/* ⚠️ Rendus par un PORTAIL : sans lui, l'animation `fadeUp` de la vue porte un

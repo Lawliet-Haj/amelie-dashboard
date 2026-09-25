@@ -41,7 +41,16 @@ export function estJointe(r: Relance, rail: Rail, jour: string): boolean {
 
 /** L'état d'un canal pour CE rail : ce qu'on affiche, et ce qu'il vaut pour le compte. */
 export interface EtatCanal {
+  /** La phrase complète — info-bulle et lecteur d'écran. */
   texte: string;
+  /**
+   * Le mot affiché dans la puce, à côté de l'icône du canal (2026-09-23).
+   *
+   * ⚠️ L'icône dit DÉJÀ le canal : « SMS livré » devient « Livré » à côté d'une bulle. C'est
+   * ce qui tient les trois canaux sur une ligne. La phrase complète reste dans `texte`,
+   * affichée au survol et lue par les lecteurs d'écran — on ne perd rien, on la range.
+   */
+  court: string;
   ton: Ton;
   /** Quelque chose est parti sur ce canal depuis l'entrée dans le rail. */
   tente: boolean;
@@ -51,8 +60,8 @@ export interface EtatCanal {
   horsPerimetre: boolean;
 }
 
-const SANS_OBJET = (texte: string): EtatCanal =>
-  ({ texte, ton: 'neutre', tente: false, abouti: false, horsPerimetre: true });
+const SANS_OBJET = (texte: string, court: string): EtatCanal =>
+  ({ texte, court, ton: 'neutre', tente: false, abouti: false, horsPerimetre: true });
 
 /**
  * Le jour où cette patiente est entrée dans ce rail. Tout se compare à cette date.
@@ -80,42 +89,42 @@ function depuisEntree(ts: string | null | undefined, entree: string | null): boo
  * lectrice — alors que c'est justement un cas qu'un contrôle doit faire remonter.
  */
 export function canalAppel(r: Relance, entree: string | null): EtatCanal {
-  if (!r.telephone) return SANS_OBJET('Pas de téléphone');
+  if (!r.telephone) return SANS_OBJET('Pas de téléphone', 'Pas de numéro');
   if (!depuisEntree(r.dernier_appel, entree)) {
-    return { texte: 'Pas appelée', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
+    return { texte: 'Pas appelée', court: 'Pas appelée', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
   }
-  const abouti = (texte: string): EtatCanal =>
-    ({ texte, ton: 'ok', tente: true, abouti: true, horsPerimetre: false });
-  const rate = (texte: string): EtatCanal =>
-    ({ texte, ton: 'echec', tente: true, abouti: false, horsPerimetre: false });
+  const abouti = (texte: string, court: string): EtatCanal =>
+    ({ texte, court, ton: 'ok', tente: true, abouti: true, horsPerimetre: false });
+  const rate = (texte: string, court: string): EtatCanal =>
+    ({ texte, court, ton: 'echec', tente: true, abouti: false, horsPerimetre: false });
 
-  if (r.statut === 'Répondu transfert') return abouti('Transférée à une conseillère');
-  if (r.statut === 'Répondu SMS') return abouti('Elle a parlé');
+  if (r.statut === 'Répondu transfert') return abouti('Transférée à une conseillère', 'Transférée');
+  if (r.statut === 'Répondu SMS') return abouti('Elle a parlé', 'A parlé');
   if (r.vocal_statut === 'depose_el' || r.vocal_statut === 'depose_agent') {
-    return abouti('Message vocal déposé');
+    return abouti('Message vocal déposé', 'Vocal déposé');
   }
-  if (r.statut === 'Répondeur') return rate('Messagerie — aucun message laissé');
-  if (r.statut === 'Raccroché') return rate('A décroché puis raccroché');
-  if (r.statut === 'Non répondu') return rate('Appelée, sans réponse');
-  if (r.echec_motif) return rate('Appel non abouti — ' + String(r.echec_motif).toLowerCase());
-  return rate('Appel lancé, aucun résultat enregistré');
+  if (r.statut === 'Répondeur') return rate('Messagerie — aucun message laissé', 'Messagerie');
+  if (r.statut === 'Raccroché') return rate('A décroché puis raccroché', 'Raccroché');
+  if (r.statut === 'Non répondu') return rate('Appelée, sans réponse', 'Sans réponse');
+  if (r.echec_motif) return rate('Appel non abouti — ' + String(r.echec_motif).toLowerCase(), 'Non abouti');
+  return rate('Appel lancé, aucun résultat enregistré', 'Sans résultat');
 }
 
 /** Le SMS. ⚠️ Un numéro fixe n'en reçoit pas : c'est une donnée, pas un manquement. */
 export function canalSms(r: Relance, entree: string | null): EtatCanal {
-  if (!r.telephone) return SANS_OBJET('Pas de téléphone');
-  if (isFixe(r.telephone)) return SANS_OBJET('Fixe — pas de SMS');
+  if (!r.telephone) return SANS_OBJET('Pas de téléphone', 'Pas de numéro');
+  if (isFixe(r.telephone)) return SANS_OBJET('Fixe — pas de SMS', 'Fixe');
   if (!r.sms_statut || !depuisEntree(r.sms_le, entree)) {
-    return { texte: 'Pas de SMS', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
+    return { texte: 'Pas de SMS', court: 'Pas de SMS', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
   }
-  const t = (texte: string, ton: Ton, abouti: boolean): EtatCanal =>
-    ({ texte, ton, tente: true, abouti, horsPerimetre: false });
+  const t = (texte: string, court: string, ton: Ton, abouti: boolean): EtatCanal =>
+    ({ texte, court, ton, tente: true, abouti, horsPerimetre: false });
   switch (r.sms_statut) {
-    case 'livre':       return t('SMS livré', 'ok', true);
-    case 'envoye':      return t('SMS envoyé, livraison non confirmée', 'encours', false);
-    case 'echec':       return t('SMS non livré', 'echec', false);
-    case 'echec_envoi': return t('SMS jamais parti', 'echec', false);
-    default:            return t('SMS : ' + r.sms_statut, 'encours', false);
+    case 'livre':       return t('SMS livré', 'Livré', 'ok', true);
+    case 'envoye':      return t('SMS envoyé, livraison non confirmée', 'Envoyé', 'encours', false);
+    case 'echec':       return t('SMS non livré', 'Non livré', 'echec', false);
+    case 'echec_envoi': return t('SMS jamais parti', 'Jamais parti', 'echec', false);
+    default:            return t('SMS : ' + r.sms_statut, String(r.sms_statut), 'encours', false);
   }
 }
 
@@ -129,21 +138,21 @@ export function canalSms(r: Relance, entree: string | null): EtatCanal {
  * l'envoi manuel.
  */
 export function canalMail(r: Relance, rail: Rail, entree: string | null): EtatCanal {
-  if (!mailDansLeRail(rail)) return SANS_OBJET('Mail retiré à cette étape');
-  if (!r.email) return SANS_OBJET('Pas d’adresse');
+  if (!mailDansLeRail(rail)) return SANS_OBJET('Mail retiré à cette étape', 'Retiré');
+  if (!r.email) return SANS_OBJET('Pas d’adresse', 'Pas d’adresse');
   if (!r.email_statut || !depuisEntree(r.email_le, entree)) {
-    return { texte: 'Pas de mail', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
+    return { texte: 'Pas de mail', court: 'Pas de mail', ton: 'attente', tente: false, abouti: false, horsPerimetre: false };
   }
-  const t = (texte: string, ton: Ton, abouti: boolean): EtatCanal =>
-    ({ texte, ton, tente: true, abouti, horsPerimetre: false });
+  const t = (texte: string, court: string, ton: Ton, abouti: boolean): EtatCanal =>
+    ({ texte, court, ton, tente: true, abouti, horsPerimetre: false });
   switch (r.email_statut) {
-    case 'clique':      return t('Mail cliqué', 'fort', true);
-    case 'ouvert':      return t('Mail ouvert', 'ok', true);
-    case 'livre':       return t('Mail livré', 'ok', true);
-    case 'envoye':      return t('Mail envoyé, livraison non confirmée', 'encours', false);
-    case 'echec':       return t('Mail non livré', 'echec', false);
-    case 'echec_envoi': return t('Mail jamais parti', 'echec', false);
-    default:            return t('Mail : ' + r.email_statut, 'encours', false);
+    case 'clique':      return t('Mail cliqué', 'Cliqué', 'fort', true);
+    case 'ouvert':      return t('Mail ouvert', 'Ouvert', 'ok', true);
+    case 'livre':       return t('Mail livré', 'Livré', 'ok', true);
+    case 'envoye':      return t('Mail envoyé, livraison non confirmée', 'Envoyé', 'encours', false);
+    case 'echec':       return t('Mail non livré', 'Non livré', 'echec', false);
+    case 'echec_envoi': return t('Mail jamais parti', 'Jamais parti', 'echec', false);
+    default:            return t('Mail : ' + r.email_statut, String(r.email_statut), 'encours', false);
   }
 }
 
@@ -201,6 +210,11 @@ export interface ContexteJournee {
  *
  * ⚠️ Le quota passe AVANT la reprise automatique : au-delà de 5 tentatives, aucun cron ne
  * rappellera cette patiente, à aucune étape. Annoncer une reprise serait un mensonge.
+ *
+ * ⚠️ Une consigne ne renvoie JAMAIS vers un autre onglet (2026-09-23). Elles disaient « à
+ * reprendre à la main dans « Relances » », or l'équipe de contrôle n'utilise que cet écran
+ * et le mode opératoire lui demande de prévenir le responsable : la consigne dit désormais
+ * la même chose que le document.
  */
 export function actionDuDossier(
   r: Relance, rail: Rail, jointe: boolean, rienTente: boolean, ctx: ContexteJournee,
@@ -227,11 +241,11 @@ export function actionDuDossier(
   if (quotaEpuise(r)) {
     return {
       code: 'quota', gravite: 'alerte',
-      texte: PLAFOND_TENTATIVES + ' tentatives épuisées — à reprendre à la main dans « Relances »',
+      texte: PLAFOND_TENTATIVES + ' tentatives épuisées — prévenez le responsable',
     };
   }
   if (rienTente) {
-    return { code: 'rien-tente', texte: 'Rien n’a été tenté — à signaler', gravite: 'alerte' };
+    return { code: 'rien-tente', texte: 'Rien n’a été tenté — prévenez le responsable', gravite: 'alerte' };
   }
 
   const suivante = prochaineEtapeAutomatique(rail);
@@ -254,7 +268,7 @@ export function actionDuDossier(
   }
   return {
     code: 'fin-parcours', gravite: 'alerte',
-    texte: 'Plus aucune étape automatique — à reprendre à la main dans « Relances »',
+    texte: 'Plus aucune étape automatique — prévenez le responsable',
   };
 }
 
@@ -334,6 +348,31 @@ export function demandeUnGeste(b: Bilan): boolean {
   if (b.action.code === 'verifier') return true;
   if (b.jointe) return false;
   return b.action.gravite === 'alerte' || b.action.gravite === 'attente';
+}
+
+/**
+ * ── OÙ UNE LIGNE DE LA JOURNÉE EST RANGÉE (refonte du 2026-09-23) ──────────────
+ *
+ * L'écran range chaque patiente attendue dans UNE et une seule des quatre places :
+ *
+ *   a-traiter    → la file « À faire », groupe « Sur la journée »
+ *   declaration  → la file, groupe « Disent avoir envoyé » (qui déborde la journée)
+ *   traitee      → la file, groupe « Déjà traitées »
+ *   reste        → replié sous « Le reste de la journée » : rien n'y attend de geste
+ *
+ * ⚠️ Une fonction, pas quatre filtres dans la vue : c'est la condition pour qu'aucune
+ * patiente ne soit comptée deux fois (une déclaration du jour dans deux groupes) ni
+ * oubliée (dans aucun). La vue ET les contrôles appellent celle-ci.
+ *
+ * ⚠️ `traitee` passe en premier : un geste consigné range la ligne, quoi qu'elle affiche
+ * depuis. Une déclaration encore levée malgré un « Traiter » reste pourtant visible dans
+ * le groupe des déclarations — c'est la liste des drapeaux, pas celle des lignes du jour.
+ */
+export type RangeeJournee = 'a-traiter' | 'declaration' | 'traitee' | 'reste';
+export function rangeeDeLaLigne(b: Bilan, traitee: boolean): RangeeJournee {
+  if (traitee) return 'traitee';
+  if (b.action.code === 'verifier') return 'declaration';
+  return demandeUnGeste(b) ? 'a-traiter' : 'reste';
 }
 
 /**

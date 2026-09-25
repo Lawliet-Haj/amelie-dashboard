@@ -13,10 +13,14 @@ export function SearchInput({
   valeur: string;
   onChange: (v: string) => void;
   placeholder?: string;
-  largeur?: number;
+  /** En pixels, ou `'100%'` pour occuper la place que lui laisse son conteneur. */
+  largeur?: number | '100%';
 }) {
   return (
-    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+    <div style={{
+      position: 'relative', display: 'flex', alignItems: 'center',
+      width: largeur === '100%' ? '100%' : undefined,
+    }}>
       <Search size={14} style={{ position: 'absolute', left: 10, color: 'var(--muted)', pointerEvents: 'none' }} />
       <input
         value={valeur}
