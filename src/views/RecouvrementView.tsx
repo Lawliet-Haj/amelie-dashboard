@@ -94,8 +94,9 @@ function smsEtat(r: Relance): SmsEtat {
   if (r.sms_echec) return 'echec';                                    // lignes antérieures à sms_statut
   if (isFixe(r.telephone)) return 'fixe';
   // Un SMS était dû (patiente atteinte, messagerie, ou raccrochage) mais rien n'a été
-  // tracé → anomalie à rendre visible. Mêmes statuts que la condition d'envoi de W3.
-  if (r.statut === 'Répondu SMS' || r.statut === 'Répondeur' || r.statut === 'Raccroché') return 'aucun';
+  // tracé → anomalie à rendre visible. Mêmes statuts que la condition d'envoi de W3 et des
+  // post-call J+7 / J+14 — « Répondu transfert » compris depuis le 2026-10-05.
+  if (r.statut === 'Répondu SMS' || r.statut === 'Répondu transfert' || r.statut === 'Répondeur' || r.statut === 'Raccroché') return 'aucun';
   return 'na';
 }
 
