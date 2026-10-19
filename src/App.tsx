@@ -76,7 +76,11 @@ function PhoneLink({ phone }: { phone?: string | number }) {
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
+// ⚠️ Exige le jeton depuis le 2026-10-19 (l'endpoint acceptait n'importe qui). Le serveur
+// prend « rappelé par » dans le JETON ; `rappele_par` n'est plus envoyé que par compatibilité.
+// ⚠️ Un refus répond 200 À CORPS VIDE : `res.ok` seul ne prouve rien, on exige `ok: true`.
 async function markRappelDone(
+  token: string,
   convId: string,
   rappele_par: string,
   remarque: string,
@@ -86,7 +90,7 @@ async function markRappelDone(
   try {
     const res = await fetch(`${API_BASE}/webhook/dashboard-mark-rappel`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
       body: JSON.stringify({
         conv_id: convId, statut: 'DONE', rappele_par, remarque,
         ...(phone ? { phone } : {}),
@@ -94,7 +98,11 @@ async function markRappelDone(
       }),
       signal: AbortSignal.timeout(8000),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    const texte = await res.text();
+    if (!texte) return false;
+    const j = JSON.parse(texte);
+    return (Array.isArray(j) ? j[0] : j)?.ok === true;
   } catch {
     return false;
   }
@@ -1538,7 +1546,7 @@ function RappelsView({
     setLocalStatus(prev => ({ ...prev, [r.conv_id]: 'DONE' }));
     const now = new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     setLocalTrace(prev => ({ ...prev, [r.conv_id]: { rappele_le: now, rappele_par: nom, remarque } }));
-    const ok = await markRappelDone(r.conv_id, nom, remarque);
+    const ok = await markRappelDone(user?.token ?? '', r.conv_id, nom, remarque);
     if (!ok) {
       setLocalStatus(prev => ({ ...prev, [r.conv_id]: 'PENDING' }));
       setLocalTrace(prev => { const n = { ...prev }; delete n[r.conv_id]; return n; });
@@ -2492,7 +2500,7 @@ type View = 'overview' | 'appels' | 'rappels' | 'anomalies' | 'users' | 'recouvr
 
 export default function App() {
   const { user, login, logout }       = useAuth();
-  const { data, loading, refresh, lastRefresh, hasNewUrgent, dismissNewUrgent } = useData();
+  const { data, loading, error: erreurDonnees, refresh, lastRefresh, hasNewUrgent, dismissNewUrgent } = useData(user);
   const [view, setView]               = useState<View>('overview');
 
   // Redirect recouvrement role to their view on login
@@ -2522,7 +2530,7 @@ export default function App() {
       ...prev,
       [conv_id]: { statut: 'DONE', diagnostic: '', remarque, par: nom, le: now },
     }));
-    await markRappelDone(conv_id, nom, remarque, phone, motif);
+    await markRappelDone(user?.token ?? '', conv_id, nom, remarque, phone, motif);
   }, [user]);
 
   // Reset local treatments when fresh data arrives
@@ -2776,11 +2784,27 @@ export default function App() {
           )}
         </div>
 
+        {/* Les données de l'entrant n'ont pas pu être rafraîchies : on le DIT, au-dessus des
+            dernières données reçues (qui restent affichées). Jamais de chiffres inventés. */}
+        {erreurDonnees && data && ['overview', 'appels', 'rappels', 'anomalies'].includes(view) && (
+          <div style={{ marginBottom: 16, padding: '10px 14px', borderRadius: 10, border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b', fontSize: 13, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertTriangle size={15} />
+            <span style={{ flex: 1 }}>{erreurDonnees}. Les chiffres affichés sont ceux de la dernière mise à jour réussie.</span>
+          </div>
+        )}
+
         {/* Content */}
+        {/* ⚠️ Utilisateurs et Paramètres ne dépendent PAS des données de l'entrant : depuis que
+            les rôles recouvrement / facturation ne les chargent plus (jeton exigé, 2026-10-19),
+            les conditionner à `data` aurait vidé leur écran Paramètres. */}
         {view === 'recouvrement' ? (
           <RecouvrementView user={user} />
         ) : view === 'facturation' ? (
           <FacturationView user={user} />
+        ) : view === 'users' ? (
+          user.role === 'admin' ? <UsersView currentUser={user} /> : null
+        ) : view === 'parametres' ? (
+          <ParametresView user={user} />
         ) : loading && !data ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -2811,13 +2835,17 @@ export default function App() {
                 onTimeline={openTimeline}
               />
             )}
-            {view === 'users'     && user.role === 'admin' && <UsersView currentUser={user} />}
-            {view === 'parametres' && <ParametresView user={user} />}
           </>
         ) : (
           <div style={{ textAlign: 'center', color: 'var(--muted)', marginTop: 80, fontSize: 14 }}>
             <Phone size={32} strokeWidth={1.5} style={{ marginBottom: 12, opacity: .4 }} />
-            <p>Aucune donnée disponible</p>
+            <p>{erreurDonnees ?? 'Aucune donnée disponible'}</p>
+            {/* Un jeton refusé (session expirée, secret changé) ne se répare qu'en se reconnectant. */}
+            {erreurDonnees && (
+              <button onClick={logout} className="btn btn-ghost" style={{ marginTop: 12 }}>
+                <LogOut size={14} /> Se reconnecter
+              </button>
+            )}
           </div>
         )}
       </main>

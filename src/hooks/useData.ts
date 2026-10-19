@@ -1,7 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { DashboardData } from '../types';
+import type { AuthUser, DashboardData } from '../types';
 
 const API_URL = 'https://n8n.srv778935.hstgr.cloud/webhook/dashboard-data';
+
+// ⚠️⚠️ `dashboard-data` EXIGE LE JETON depuis le 2026-10-19 : il répondait jusque-là à
+// N'IMPORTE QUI — 2 000 appels, numéros et transcripts complets. Seuls les rôles qui voient
+// les écrans de l'entrant le reçoivent (même liste que `visibleRoles` des vues Vue
+// d'ensemble / Appels / Rappels / Anomalies dans App.tsx) ; les autres ne l'appellent plus.
+export const ROLES_ENTRANT: AuthUser['role'][] = ['admin', 'conseillere'];
 
 const MOCK: DashboardData = {
   kpis: { total_week: 42, anomalies_week: 3, avg_duration: 48, rappels_pending: 5, total_today: 7 },
@@ -73,7 +79,8 @@ const MOCK: DashboardData = {
   ],
 };
 
-export function useData() {
+export function useData(user: AuthUser | null) {
+  const token = user && ROLES_ENTRANT.includes(user.role) ? user.token : null;
   const [data, setData]               = useState<DashboardData | null>(null);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
@@ -81,29 +88,51 @@ export function useData() {
   const [hasNewUrgent, setHasNewUrgent] = useState(false);
   const prevUrgentRef = useRef<number>(0);
   const isFirstFetch  = useRef(true);
+  // De vraies données ont-elles déjà été reçues avec CE jeton ? (le repli de démonstration,
+  // en développement, ne doit jamais remplacer des données réelles)
+  const recuRef = useRef(false);
 
   const fetchData = useCallback(async () => {
+    // Pas connecté, ou rôle qui ne voit pas l'entrant : on n'appelle pas, et on OUBLIE ce
+    // qu'on avait (une déconnexion ne doit pas laisser des transcripts en mémoire).
+    if (!token) { recuRef.current = false; setData(null); setError(null); setLoading(false); return; }
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(API_URL, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(API_URL, { headers: { Authorization: 'Bearer ' + token }, signal: AbortSignal.timeout(15000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json: DashboardData = await res.json();
+      // ⚠️ Un refus d'authentification répond 200 À CORPS VIDE (le nœud d'auth lève une
+      // erreur, n8n saute `Respond`). Un `res.json()` direct planterait sans dire pourquoi.
+      const texte = await res.text();
+      if (!texte) throw new Error('accès refusé ou session expirée');
+      const json: DashboardData = JSON.parse(texte);
+      if (!json || !Array.isArray(json.rappels)) throw new Error('réponse inattendue du serveur');
       const urgentNow = json.rappels.filter(r => r.priorite === 'URGENT' && r.statut !== 'DONE').length;
       if (!isFirstFetch.current && urgentNow > prevUrgentRef.current) {
         setHasNewUrgent(true);
       }
       prevUrgentRef.current = urgentNow;
       isFirstFetch.current = false;
+      recuRef.current = true;
       setData(json);
-    } catch {
+    } catch (e) {
       isFirstFetch.current = false;
-      setData(MOCK);
+      const raison = e instanceof Error ? e.message : String(e);
+      // ⚠️⚠️ PLUS JAMAIS DE DONNÉES INVENTÉES EN PRODUCTION. Le repli sur `MOCK` affichait de
+      // faux chiffres sans rien signaler dès que le serveur ne répondait pas — et un refus de
+      // jeton aurait fait pareil. On GARDE les dernières données reçues et on dit l'erreur.
+      // Le jeu de démonstration ne sert plus qu'en développement local, et il est annoncé.
+      if (import.meta.env.DEV && !recuRef.current) {
+        setData(MOCK);
+        setError('Serveur injoignable (' + raison + ') : données de DÉMONSTRATION');
+      } else {
+        setError('Données de l’entrant indisponibles : ' + raison);
+      }
     } finally {
       setLoading(false);
       setLastRefresh(new Date());
     }
-  }, []);
+  }, [token]);
 
   // Initial fetch
   useEffect(() => { fetchData(); }, [fetchData]);
