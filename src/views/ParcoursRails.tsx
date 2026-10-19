@@ -148,7 +148,7 @@ export function ParcoursRails({
           {/* Un terme hors de `actives`, comme les ordonnances reçues : l'afficher, sinon les
               totaux ne bouclent plus et ressemblent à des dossiers égarés. */}
           {global.sortiesManuelles > 0 && (
-            <Agregat n={global.sortiesManuelles} libelle="sorties à la main" />
+            <Agregat n={global.sortiesManuelles} libelle="sorties du parcours" />
           )}
         </div>
       </div>
@@ -399,8 +399,8 @@ function PanneauRail({
       <Ligne libelle="Ordonnance reçue" n={c?.sortis ?? 0} ton="ok"
              aide="Sortis définitivement : ORTHOP ne réclame plus la prescription." />
       {(c?.sortiesManuelles ?? 0) > 0 && (
-        <Ligne libelle="Sorties du parcours à la main" n={c!.sortiesManuelles}
-               aide="L'équipe a arrêté les relances vers ces patientes (bouton du panneau de la patiente). Réversible." />
+        <Ligne libelle="Sorties du parcours" n={c!.sortiesManuelles}
+               aide="Plus de relance vers ces patientes : l'équipe les a sorties (bouton du panneau de la patiente), ou l'extraction ORTHOP l'a fait parce que le tire-lait est rendu. Réversible." />
       )}
       <Ligne libelle="Joints par écrit dans ce rail" n={c?.jointsEcrit ?? 0} ton="ok2"
              aide="SMS ou mail livré DEPUIS l'entrée dans ce rail. Un écrit reçu à une étape précédente ne compte pas ici." />

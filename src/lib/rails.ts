@@ -450,6 +450,11 @@ export function estSortie(r: Relance): boolean {
  * ⚠️ Ce n'est PAS `estSortie()` : celle-ci veut dire « ORTHOP ne la réclame plus » et se
  * lit « ordonnance reçue » partout. Une sortie manuelle est une DÉCISION, réversible, et
  * elle a son propre compteur — la ranger dans « ordonnances reçues » mentirait.
+ *
+ * ⚠️ Depuis le 2026-10-19, l'extraction ORTHOP pose AUSSI cette sortie quand le tire-lait est
+ * rendu (toutes les lignes de location finies avant la fin de location) : `sorti_par` vaut
+ * alors « ORTHOP ». Même colonne, mêmes effets, même bouton pour l'annuler — d'où un libellé
+ * « sorties du parcours » et non plus « à la main » sur les compteurs.
  */
 export function sortieManuelle(r: Relance): boolean {
   return Boolean(r.sorti_le);
