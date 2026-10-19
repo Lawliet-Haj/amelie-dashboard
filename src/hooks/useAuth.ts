@@ -1,7 +1,14 @@
 import { useState, useCallback } from 'react';
 import type { AuthUser } from '../types';
 
-const STORAGE_KEY = 'amelie_dashboard_token';
+// ⚠️ La clé porte une VERSION, à changer en même temps que le secret de signature des jetons
+// (DASHBOARD_JWT_SECRET côté n8n). Un jeton signé avec l'ancien secret est refusé par TOUS les
+// endpoints — mais ils répondent alors 200 à corps vide, pas 401 : l'écran afficherait des
+// erreurs sans jamais proposer de se reconnecter. Changer la clé ignore l'ancien jeton et
+// ramène chacun à l'écran de connexion. Rotation du 2026-10-19 : `amelie_dashboard_token` → `_v2`.
+const STORAGE_KEY = 'amelie_dashboard_token_v2';
+const ANCIENNES_CLES = ['amelie_dashboard_token'];
+try { for (const k of ANCIENNES_CLES) localStorage.removeItem(k); } catch { /* stockage indisponible */ }
 
 function decodePayload(token: string): Record<string, unknown> | null {
   try {
